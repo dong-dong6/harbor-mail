@@ -1,0 +1,87 @@
+{
+  "h2": {
+    "suites": [
+      {
+        "suite": "com.itdong.mail.MailApiTest",
+        "tests": 23,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.SecurityConfigTest",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.provider.ProviderHttpTest",
+        "tests": 10,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.provider.ProviderMailTest",
+        "tests": 9,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    ],
+    "total": 47,
+    "failures": 0
+  },
+  "postgres": {
+    "suites": [
+      {
+        "suite": "com.itdong.mail.MailApiTest",
+        "tests": 23,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.SecurityConfigTest",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.provider.ProviderHttpTest",
+        "tests": 10,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.provider.ProviderMailTest",
+        "tests": 9,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    ],
+    "total": 47,
+    "failures": 0
+  },
+  "generatedAt": "2026-09-30T06:54:25.629890+00:00",
+  "version": "0.1.0",
+  "java": "21.0.12.1",
+  "springBoot": "4.0.8",
+  "maven": "3.9.9",
+  "flutter": "3.47.5",
+  "dart": "3.13.4",
+  "postgresql": "17.11",
+  "flutterTests": 10,
+  "flutterAnalyze": "passed",
+  "flutterWebRelease": "passed",
+  "jarBytes": 57651715,
+  "jarSha256": "618c909d73748bbe1714a5b97c0ec49655ce47cd275be92b6e37d9e3a6382683",
+  "realProviderAcceptance": "not_run_no_authorization",
+  "nativeReleaseBuilds": "not_run",
+  "browserEndToEnd": "not_run_cloud_browser_local_address_block",
+  "dockerRuntime": "not_run_docker_unavailable"
+}

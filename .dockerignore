@@ -1,0 +1,11 @@
+tools
+.git
+.env
+.env.*.local
+data
+test-results
+*.log
+client
+server
+docs
+

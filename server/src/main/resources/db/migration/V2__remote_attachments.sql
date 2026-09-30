@@ -1,0 +1,1 @@
+CREATE TABLE remote_attachment (id VARCHAR(80) PRIMARY KEY, message_id VARCHAR(80) NOT NULL REFERENCES mail_message(id), provider_id VARCHAR(1500) NOT NULL, file_name VARCHAR(255) NOT NULL, content_type VARCHAR(200) NOT NULL, size_bytes BIGINT NOT NULL, UNIQUE(message_id,provider_id));

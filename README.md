@@ -4,10 +4,6 @@
 
 **这不是已接入你真实邮箱的成品部署。** 真实账号需要你在自己的环境配置 OAuth 应用或客户端授权码。当前交付的测试使用合成数据和本地协议模拟服务器，不会向真实收件人发送邮件。
 
-## 当前仓库交付状态
-
-完整源码、配置、文档与可运行 JAR 均包含在 Releases 的 `mail-client-v0.1.0.zip` 中。源码目录尚未展开到此仓库的 main 分支；请下载 Release 中的完整 ZIP，不要使用 GitHub 自动生成的 Source code 压缩包。以下源码构建与运行命令均在完整 ZIP 解压后的项目目录执行。
-
 ## 最快体验
 
 GitHub Release 完整包为 `mail-client-v0.1.0.zip`：只需下载并解压这一个 ZIP，无需合并分包。GitHub 自动生成的 Source code 压缩包只包含源码，不包含集成 JAR，需要自行构建。
@@ -68,6 +64,29 @@ bash scripts/build.sh
 
 原生端可设置 `--dart-define=API_BASE=https://你的服务端地址/api/v1`。API_BASE 包含 `/api/v1` 前缀，不将邮箱提供商地址传入客户端。Windows、macOS、iOS、Android、Linux 的构建工具与签名条件不同；参见 [客户端说明](client/README.md)。
 
+## GitHub Actions 自动构建
+
+`.github/workflows/build.yml` 在每次分支 push、Pull Request 和手动 **Actions → Build and release → Run workflow** 时运行：
+
+1. 使用 Ubuntu 24.04、Java 21、Flutter 3.47.5（官方 SDK + SHA-256 校验）
+2. Flutter analyze / test、Web release 构建，随后 Maven verify（H2）
+3. 另外以 PostgreSQL 17 服务执行后端测试
+4. 启动集成 JAR，验证 Web 入口并运行仅针对合成演示数据的黑盒测试
+5. 生成完整运行 ZIP 和 `SHA256SUMS`，上传至本次运行页面的 **Artifacts → mail-client-提交SHA**，保留 14 天；测试报告保留 7 天
+
+下载 Actions artifact 并解压外层归档后，里面的 `mail-client-v版本.zip` 就是包含源码与 `dist/mail-client.jar` 的完整包，不需本地安装 Flutter/Maven。运行只需 Java 21。可用 `sha256sum -c SHA256SUMS` 校验完整包。
+
+发布新版本时，先同步修改 `server/pom.xml` 与 `client/pubspec.yaml` 的版本号，再推送对应 `vX.Y.Z` 标签。例如版本号改为 `0.1.1` 后：
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+只有 **push 版本标签** 且所有构建与测试成功才会创建 GitHub Release，附上完整 ZIP 和校验文件。手动运行与 PR 均不会发布。版本不匹配会提前失败；已有 Release 不会被覆盖，请使用新版本标签。普通构建只有 `contents: read`，发布作业单独使用 `contents: write`；不需要设置个人访问令牌、邮箱凭据或生产密钥，也不会自动部署服务。
+
+此流水线生成 Flutter Web + Java 集成运行包，尚不包含 Android/iOS/桌面原生安装包与签名。GitHub 托管 runner 需要能下载 Maven、Flutter、Pub 依赖和 PostgreSQL 镜像；首次构建用时取决于依赖下载速度。
+
 ## 使用真实邮箱的部署前提
 
 1. 使用自己的域名、HTTPS 入口及可访问所有目标邮箱服务的服务器
@@ -111,4 +130,4 @@ python3 scripts/smoke-demo.py --url http://127.0.0.1:8080
 
 这是完整开发方案的首个可运行版本。全量历史、可靠增量游标与删除校准、系统推送、完整离线缓存和原生分发签名是独立后续工作，不能把当前版本称为六端生产级邮件产品。接入代码的模拟测试通过也不等于真实 Google/Microsoft/QQ/网易账号验收完成。
 
-本项目未发布到公共代码仓库，未进行任何真实邮箱授权或外部投递。所有第三方依赖遵循其各自许可证；内置字体许可证见客户端 assets。
+本项目未进行任何真实邮箱授权或外部投递。所有第三方依赖遵循其各自许可证；内置字体许可证见客户端 assets。

@@ -1,0 +1,155 @@
+name: Build and release
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: Test and build Web + Java
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CI: 'true'
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
+      DART_SUPPRESS_ANALYTICS: 'true'
+      MAIL_MAVEN_REPO: ${{ github.workspace }}/tools/m2
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: mail_test
+          POSTGRES_USER: mail_test
+          # Disposable runner-only test database; never a real account.
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mail_test -d mail_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned Flutter SDK from official archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.47.5-stable.tar.xz \
+            --output "$RUNNER_TEMP/flutter.tar.xz"
+          echo "2132e990f236f8d22e7c6314b29a191a95b10d7cbcfec9b4e2e303d996652cbb  $RUNNER_TEMP/flutter.tar.xz" | sha256sum --check
+          tar -xf "$RUNNER_TEMP/flutter.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: Check toolchain and release version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          java --version
+          mvn --version
+          flutter --version
+          python3 scripts/check-version.py
+      - name: Analyze, test (H2), build Web, and package integrated JAR
+        run: bash scripts/build.sh
+      - name: Preserve H2 test reports
+        if: always()
+        run: |
+          mkdir -p test-results/h2
+          if [ -d server/target/surefire-reports ]; then
+            cp -R server/target/surefire-reports/. test-results/h2/
+          fi
+      - name: Test backend with PostgreSQL
+        env:
+          TEST_DATABASE_URL: jdbc:postgresql://localhost:5432/mail_test
+          TEST_DATABASE_USER: mail_test
+          TEST_DATABASE_PASSWORD: ci-only-not-a-secret
+        run: mvn -B -f server/pom.xml -Dmaven.repo.local="$MAIL_MAVEN_REPO" test
+      - name: Smoke test the integrated demo JAR
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          java -jar dist/mail-client.jar --spring.profiles.active=demo > test-results/demo.log 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true; wait "$app_pid" 2>/dev/null || true' EXIT
+          ready=false
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8080/ -o "$RUNNER_TEMP/index.html"; then
+              ready=true
+              break
+            fi
+            kill -0 "$app_pid" || { cat test-results/demo.log; exit 1; }
+            sleep 2
+          done
+          "$ready" || { cat test-results/demo.log; exit 1; }
+          grep -q flutter_bootstrap.js "$RUNNER_TEMP/index.html"
+          python3 scripts/smoke-demo.py --url http://127.0.0.1:8080
+      - name: Create complete archive and checksum
+        run: bash scripts/package.sh
+      - name: Upload complete runnable build
+        uses: actions/upload-artifact@v7
+        with:
+          name: mail-client-${{ github.sha }}
+          path: |
+            dist/mail-client-v*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-${{ github.sha }}
+          path: |
+            test-results/
+            server/target/surefire-reports/
+          if-no-files-found: warn
+          retention-days: 7
+
+  release:
+    name: Publish tagged release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # No checkout or execution of project code in the write-token job.
+      - uses: actions/download-artifact@v8
+        with:
+          name: mail-client-${{ github.sha }}
+          path: dist
+      - name: Verify archive and create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check SHA256SUMS
+          # Never overwrite an existing release or its downloadable assets.
+          gh release create "$RELEASE_TAG" \
+            "mail-client-${RELEASE_TAG}.zip" SHA256SUMS \
+            --verify-tag --title "Harbor Mail $RELEASE_TAG" \
+            --notes "Complete source + Flutter Web/Java 21 runtime archive. Extract the ZIP and follow README.md. This build does not include native installers."

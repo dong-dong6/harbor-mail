@@ -1,0 +1,13 @@
+CREATE TABLE app_state (id INTEGER PRIMARY KEY, seq BIGINT NOT NULL, generation VARCHAR(80) NOT NULL);
+INSERT INTO app_state VALUES (1,0,'v1');
+CREATE TABLE owner_user (id INTEGER PRIMARY KEY, username VARCHAR(120) NOT NULL, password_hash VARCHAR(200) NOT NULL);
+CREATE TABLE access_token (token_hash VARCHAR(64) PRIMARY KEY, expires_at BIGINT NOT NULL);
+CREATE TABLE mail_account (id VARCHAR(80) PRIMARY KEY, data TEXT NOT NULL, secret TEXT NOT NULL);
+CREATE TABLE mail_message (id VARCHAR(80) PRIMARY KEY, account_id VARCHAR(80) NOT NULL REFERENCES mail_account(id), remote_id VARCHAR(1500) NOT NULL, data TEXT NOT NULL, revision BIGINT NOT NULL, received_at VARCHAR(40) NOT NULL, folder VARCHAR(40) NOT NULL, UNIQUE(account_id,remote_id));
+CREATE INDEX ix_message_page ON mail_message(received_at,id);
+CREATE TABLE draft (id VARCHAR(80) PRIMARY KEY, account_id VARCHAR(80) NOT NULL REFERENCES mail_account(id), data TEXT NOT NULL, revision BIGINT NOT NULL);
+CREATE TABLE attachment (id VARCHAR(80) PRIMARY KEY, draft_id VARCHAR(80), file_name VARCHAR(255) NOT NULL, content_type VARCHAR(200) NOT NULL, content BYTEA NOT NULL);
+CREATE TABLE job (id VARCHAR(80) PRIMARY KEY, kind VARCHAR(30) NOT NULL, account_id VARCHAR(80) NOT NULL, idempotency_key VARCHAR(200), request_hash VARCHAR(64), status VARCHAR(40) NOT NULL, payload TEXT NOT NULL, error_code VARCHAR(100), created_at VARCHAR(40) NOT NULL, UNIQUE(kind,idempotency_key));
+CREATE INDEX ix_job_status ON job(status,kind);
+CREATE TABLE change_log (seq BIGINT PRIMARY KEY, type VARCHAR(40) NOT NULL, entity_id VARCHAR(80) NOT NULL, revision BIGINT NOT NULL);
+CREATE TABLE oauth_state (state_hash VARCHAR(64) PRIMARY KEY, provider VARCHAR(30) NOT NULL, expires_at BIGINT NOT NULL, payload TEXT NOT NULL);
