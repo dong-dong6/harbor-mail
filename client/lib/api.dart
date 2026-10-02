@@ -75,6 +75,53 @@ class MailApi {
     token = result['accessToken'];
   }
 
+  Future<OAuthSettingsSnapshot> oauthSettings() async =>
+      OAuthSettingsSnapshot.fromJson(await request('GET', '/settings/oauth'));
+
+  Future<OAuthProviderSettings> saveOAuthSettings({
+    required String provider,
+    required int revision,
+    required String clientId,
+    required String redirectUri,
+    required String tenant,
+    String clientSecret = '',
+    bool clearClientSecret = false,
+  }) async {
+    _checkOAuthProvider(provider);
+    if (clearClientSecret && clientSecret.trim().isNotEmpty) {
+      throw ApiException('INVALID_REQUEST', '不能同时替换和清除密钥');
+    }
+    return OAuthProviderSettings.fromJson(
+      await request(
+        'PUT',
+        '/settings/oauth/$provider',
+        body: {
+          'revision': revision,
+          'clientId': clientId.trim(),
+          'redirectUri': redirectUri.trim(),
+          'tenant': tenant.trim(),
+          // An empty editor means preserve, never a placeholder or an empty secret.
+          if (clientSecret.trim().isNotEmpty) 'clientSecret': clientSecret,
+          if (clearClientSecret) 'clearClientSecret': true,
+        },
+      ),
+    );
+  }
+
+  Future<OAuthProviderSettings> resetOAuthSettings({
+    required String provider,
+    required int revision,
+  }) async {
+    _checkOAuthProvider(provider);
+    return OAuthProviderSettings.fromJson(
+      await request(
+        'POST',
+        '/settings/oauth/$provider/reset',
+        body: {'revision': revision},
+      ),
+    );
+  }
+
   Future<Map<String, dynamic>> upload(
     String draftId,
     String name,
@@ -106,5 +153,91 @@ class MailApi {
   void dispose() {
     token = null;
     client.close();
+  }
+}
+
+const oauthProviderNames = <String, String>{
+  'GMAIL': 'Google / Gmail',
+  'OUTLOOK': '个人 Outlook',
+  'EXCHANGE': 'Microsoft 365 E3（企业）',
+};
+
+void _checkOAuthProvider(String provider) {
+  if (!oauthProviderNames.containsKey(provider)) {
+    throw ApiException('INVALID_REQUEST', '不支持的 OAuth 服务商');
+  }
+}
+
+/// Safe configuration metadata only. Secret values from responses are ignored.
+class OAuthProviderSettings {
+  final String provider, source, clientId, redirectUri, tenant;
+  final int revision;
+  final bool hasClientSecret, configured;
+
+  const OAuthProviderSettings({
+    required this.provider,
+    required this.source,
+    required this.revision,
+    required this.clientId,
+    required this.redirectUri,
+    required this.tenant,
+    required this.hasClientSecret,
+    required this.configured,
+  });
+
+  factory OAuthProviderSettings.fromJson(dynamic value) {
+    if (value is! Map ||
+        !oauthProviderNames.containsKey(value['provider']) ||
+        !['ENVIRONMENT', 'DATABASE'].contains(value['source']) ||
+        value['revision'] is! int ||
+        (value['revision'] as int) < 0 ||
+        value['clientId'] is! String ||
+        value['redirectUri'] is! String ||
+        value['tenant'] is! String ||
+        value['hasClientSecret'] is! bool ||
+        value['configured'] is! bool) {
+      throw ApiException('INVALID_RESPONSE', '无法读取 OAuth 配置，请重新载入');
+    }
+    return OAuthProviderSettings(
+      provider: value['provider'],
+      source: value['source'],
+      revision: value['revision'],
+      clientId: value['clientId'],
+      redirectUri: value['redirectUri'],
+      tenant: value['tenant'],
+      hasClientSecret: value['hasClientSecret'],
+      configured: value['configured'],
+    );
+  }
+}
+
+class OAuthSettingsSnapshot {
+  final bool demoMode, readOnly;
+  final List<OAuthProviderSettings> items;
+  const OAuthSettingsSnapshot({
+    required this.demoMode,
+    required this.readOnly,
+    required this.items,
+  });
+
+  factory OAuthSettingsSnapshot.fromJson(dynamic value) {
+    if (value is! Map ||
+        value['demoMode'] is! bool ||
+        value['readOnly'] is! bool ||
+        value['items'] is! List) {
+      throw ApiException('INVALID_RESPONSE', '无法读取 OAuth 配置，请重新载入');
+    }
+    final items = (value['items'] as List)
+        .map(OAuthProviderSettings.fromJson)
+        .toList(growable: false);
+    if (items.length != oauthProviderNames.length ||
+        items.map((item) => item.provider).toSet().length != items.length) {
+      throw ApiException('INVALID_RESPONSE', 'OAuth 服务商配置不完整，请重新载入');
+    }
+    return OAuthSettingsSnapshot(
+      demoMode: value['demoMode'],
+      readOnly: value['readOnly'],
+      items: List.unmodifiable(items),
+    );
   }
 }

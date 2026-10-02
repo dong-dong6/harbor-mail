@@ -9,6 +9,7 @@ import 'package:file_saver/file_saver.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
+import 'oauth_settings.dart';
 
 void main() => runApp(MailApp());
 const ink = Color(0xff24344c),
@@ -1669,6 +1670,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
       code = TextEditingController();
   String provider = 'QQ', error = '';
   bool busy = false;
+  late Json capabilities = widget.caps;
   @override
   void dispose() {
     email.dispose();
@@ -1698,6 +1700,28 @@ class _SettingsDialogState extends State<SettingsDialog> {
       );
       code.clear();
       if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) setState(() => error = e.toString());
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> systemOAuthSettings() async {
+    if (busy) return;
+    setState(() => busy = true);
+    try {
+      await Navigator.of(context).push<void>(MaterialPageRoute(
+        builder: (_) => OAuthSettingsPage(
+          api: widget.api,
+          demoMode: capabilities['demoMode'] == true,
+        ),
+      ));
+      if (!mounted) return;
+      final next = await widget.api.request('GET', '/settings/capabilities');
+      if (mounted) {
+        setState(() => capabilities = Map<String, dynamic>.from(next));
+      }
     } catch (e) {
       if (mounted) setState(() => error = e.toString());
     } finally {
@@ -1743,19 +1767,30 @@ class _SettingsDialogState extends State<SettingsDialog> {
                     style: TextStyle(fontWeight: FontWeight.w600)),
                 const SizedBox(height: 6),
                 const Text(
-                  '真实账户需先由服务器配置 OAuth 应用。授权在服务商页面完成。',
+                  '真实账户需先配置 OAuth 应用。保存配置不等于邮箱已连接，授权在服务商页面完成。',
                   style: TextStyle(fontSize: 12, color: muted, height: 1.6),
                 ),
-                ...((widget.caps['providers'] as List?) ?? [])
+                if (capabilities['features']?['oauthSettings'] == true)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: OutlinedButton.icon(
+                      onPressed: busy ? null : systemOAuthSettings,
+                      icon: const Icon(Icons.admin_panel_settings_outlined),
+                      label: const Text('系统 OAuth 设置'),
+                    ),
+                  ),
+                ...((capabilities['providers'] as List?) ?? [])
                     .where((p) => p['supportsOAuth'] == true)
                     .map(
                       (p) => ListTile(
                         contentPadding: EdgeInsets.zero,
                         leading: const Icon(Icons.link, color: blue),
-                        title: Text(p['provider']),
+                        title: Text(
+                          oauthProviderNames[p['provider']] ?? p['provider'],
+                        ),
                         subtitle: Text(
                           p['configured'] == true
-                              ? '服务器已配置 OAuth'
+                              ? '本地配置完整 · 仍需服务商授权'
                               : '服务器尚未配置 OAuth',
                           style: const TextStyle(fontSize: 11),
                         ),

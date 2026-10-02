@@ -1,14 +1,20 @@
-# 个人云端邮箱客户端 v0.1
+# 个人云端邮箱客户端 v0.2
 
 个人自托管邮箱客户端的第一版实现：Java 21 / Spring Boot 服务端统一连接邮箱，Flutter 客户端仅访问自己的服务端。项目包含明确隔离的合成演示模式，以及 Gmail、Outlook、Microsoft 365 E3、QQ、163 的接入实现。
 
 **这不是已接入你真实邮箱的成品部署。** 真实账号需要你在自己的环境配置 OAuth 应用或客户端授权码。当前交付的测试使用合成数据和本地协议模拟服务器，不会向真实收件人发送邮件。
 
+## v0.2.0 新增
+
+管理员可在系统内填写 Google、Outlook 和 Microsoft 365 E3 的 OAuth Client ID、密钥、HTTPS 回调与租户，无需为每次应用配置修改环境变量。密钥加密保存且不回传，支持留空保留、显式清除和恢复环境变量。演示模式只读。详见 [OAuth 设置与升级说明](docs/OAUTH_SETTINGS_UPGRADE.md)。
+
+配置完整不等于真实授权验证通过；应用或租户改变后，已有邮箱可能需要重新授权。升级必须保留原 `MAIL_ENCRYPTION_KEY` 和数据库。
+
 ## 最快体验
 
-GitHub Release 完整包为 `mail-client-v0.1.0.zip`：只需下载并解压这一个 ZIP，无需合并分包。GitHub 自动生成的 Source code 压缩包只包含源码，不包含集成 JAR，需要自行构建。
+本版完整更新包为 `mail-client-v0.2.0.zip`：只需下载并解压这一个 ZIP，无需合并分包。本次交付不会自动发布 GitHub Release；旧 `v0.1.0` 包不含系统内 OAuth 设置。GitHub 自动生成的 Source code 压缩包只包含源码，不包含集成 JAR，需要自行构建。
 
-如果使用聊天附件的分包交付，则包含一个源码包和四个运行包。将五个 ZIP 全部解压到同一个目录，让它们合并到同一个 `mail-client-v0.1.0` 文件夹中。Windows 运行 `scripts/run-demo.bat`，会先自动合并并验证 JAR 再启动；Linux/macOS 使用 `bash scripts/run-demo.sh`。分包只用于满足附件大小限制，程序内容不变。Windows 批处理脚本已提供，但未在 Windows 系统执行验收。
+Windows 可运行 `scripts/run-demo.bat`，Linux/macOS 使用 `bash scripts/run-demo.sh`。本版完整包已包含集成 JAR，不需要分包合并。Windows 批处理脚本已提供，但未在 Windows 系统执行验收。
 
 交付包的 `dist/mail-client.jar` 同时包含服务端和编译后的 Flutter Web。
 

@@ -118,6 +118,30 @@ class MailApiTest {
   }
 
   @Test
+  void demoOAuthSettingsAreReadOnlyAndRejectEveryMutation() throws Exception {
+    var listing = call("GET", "/settings/oauth", null, token, null);
+    assertEquals(200, listing.statusCode(), listing.body());
+    assertEquals(true, json(listing).get("demoMode"));
+    assertEquals(true, json(listing).get("readOnly"));
+    assertEquals(3, items(listing).size());
+    assertFalse(listing.body().contains("\"clientSecret\""));
+    for (String provider : List.of("GMAIL", "OUTLOOK", "EXCHANGE")) {
+      var save = call("PUT", "/settings/oauth/" + provider,
+          Json.map("revision", 0, "clientId", "synthetic-client", "clientSecret", "synthetic-secret",
+              "redirectUri", "https://mail.example.test/api/v1/oauth/" + provider + "/callback",
+              "tenant", ""), token, null);
+      assertEquals(409, save.statusCode(), save.body());
+      assertEquals("DEMO_MODE", ((Map<?, ?>) json(save).get("error")).get("code"));
+      var reset = call("POST", "/settings/oauth/" + provider + "/reset",
+          Json.map("revision", 0), token, null);
+      assertEquals(409, reset.statusCode(), reset.body());
+      assertEquals("DEMO_MODE", ((Map<?, ?>) json(reset).get("error")).get("code"));
+      assertEquals(0L, store.db.queryForObject(
+          "SELECT revision FROM oauth_provider_settings WHERE provider=?", Long.class, provider));
+    }
+  }
+
+  @Test
   void opaqueTokensAreHashedExpiringAndRevocable() throws Exception {
     var row = store.one("SELECT * FROM access_token WHERE token_hash=?", Security.hash(token));
     assertNotEquals(token, row.get("token_hash"));

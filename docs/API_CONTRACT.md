@@ -37,3 +37,50 @@ All subsequent API routes Bearer authentication. API failures `{error:{code,mess
 
 ## Version scope
 Real Gmail/Graph/IMAP adapters must implement bounded initial/recent metadata sync, detail fetch, basic changes and send when correctly configured; tests use deterministic fake HTTP/IMAP/SMTP endpoints only. Real account acceptance remains pending user authorization. Adapter owner exposes clean DTOs to server core and coordinates integration immediately. Complete history, push subscriptions, guaranteed offline mutation replay and all native release signing can be explicitly deferred. All nonimplemented actions return honest NOT_SUPPORTED, no success-shaped stubs.
+
+## 管理员 OAuth 应用设置（v0.2.0）
+
+沿用单一管理员 Bearer 认证。未认证返回 401；demo 可读，所有写入返回 409 `DEMO_MODE`。不返回 `clientSecret`、密文、令牌或配置指纹。配置响应 `Cache-Control: no-store`。
+
+`GET /settings/oauth`：
+
+```json
+{
+  "demoMode": false,
+  "readOnly": false,
+  "items": [{
+    "provider": "GMAIL",
+    "source": "ENVIRONMENT",
+    "revision": 0,
+    "clientId": "",
+    "redirectUri": "",
+    "tenant": "",
+    "hasClientSecret": false,
+    "configured": false,
+    "validationErrors": ["Client ID is required"]
+  }]
+}
+```
+
+实际 `items` 固定包含 `GMAIL`、`OUTLOOK`、`EXCHANGE`。`configured` 表示本地完整性/格式校验通过，绝不表示已通过提供商授权或连接测试。
+
+`PUT /settings/oauth/{provider}`：
+
+```json
+{
+  "revision": 0,
+  "clientId": "application-id",
+  "redirectUri": "https://mail.example.com/api/v1/oauth/GMAIL/callback",
+  "tenant": "",
+  "clientSecret": "",
+  "clearClientSecret": false
+}
+```
+
+`clientId`、`redirectUri`、`revision` 必填，允许空 ID/回调以保存不完整配置，但不可用于授权。`clientSecret` 省略或空白保留当前生效值；显式 `clearClientSecret: true` 清除密钥，不能与非空新密钥同时使用。数据库覆盖是整组配置。租户省略/空白使用该提供商默认值。拒绝未知字段、控制字符、错误类型和无效 HTTPS 回调/租户。
+
+`POST /settings/oauth/{provider}/reset`，请求 `{"revision": 1}`：清除数据库覆盖并恢复进程环境变量，版本仍递增。
+
+两种写入均返回更新后的单个 provider metadata。并发旧版本返回 409 `CONFIG_REVISION_CONFLICT`，不得自动覆盖新版本。未知 provider 或无效字段返回 400 `INVALID_REQUEST`。保存不会调用外部提供商验证凭据。
+
+授权过程中应用配置改变可返回 409 `OAUTH_CONFIG_CHANGED`，须重新开始授权。已有凭据与当前应用身份不匹配时返回 `REAUTH_REQUIRED`；不会将旧 refresh token 发送到新应用。

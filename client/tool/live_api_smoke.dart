@@ -35,6 +35,20 @@ Future<void> main(List<String> args) async {
     check(caps['demoMode'] == true,
         'Authenticated capabilities must also be DEMO');
     checks.add('in-memory bearer login');
+    final oauth = await api.oauthSettings();
+    check(oauth.demoMode && oauth.readOnly && oauth.items.length == 3,
+        'Demo OAuth settings must be read-only with three providers');
+    final gmail = oauth.items.firstWhere((p) => p.provider == 'GMAIL');
+    var demoBlocked = false;
+    try {
+      await api.saveOAuthSettings(provider: 'GMAIL', revision: gmail.revision,
+          clientId: '', redirectUri: '', tenant: '');
+    } on ApiException catch (e) {
+      demoBlocked = e.code == 'DEMO_MODE';
+    }
+    check(demoBlocked, 'Demo OAuth writes must be rejected');
+    checks.add('OAuth metadata and demo write protection');
+
     final accounts = (await api.request('GET', '/accounts'))['items'] as List;
     check(accounts.isNotEmpty, 'Demo account list is empty');
     final accountId = accounts.first['id'];

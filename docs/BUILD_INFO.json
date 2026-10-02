@@ -1,87 +1,112 @@
 {
-  "h2": {
-    "suites": [
-      {
-        "suite": "com.itdong.mail.MailApiTest",
-        "tests": 23,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      },
-      {
-        "suite": "com.itdong.mail.SecurityConfigTest",
-        "tests": 5,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      },
-      {
-        "suite": "com.itdong.mail.provider.ProviderHttpTest",
-        "tests": 10,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      },
-      {
-        "suite": "com.itdong.mail.provider.ProviderMailTest",
-        "tests": 9,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      }
-    ],
-    "total": 47,
-    "failures": 0
-  },
-  "postgres": {
-    "suites": [
-      {
-        "suite": "com.itdong.mail.MailApiTest",
-        "tests": 23,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      },
-      {
-        "suite": "com.itdong.mail.SecurityConfigTest",
-        "tests": 5,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      },
-      {
-        "suite": "com.itdong.mail.provider.ProviderHttpTest",
-        "tests": 10,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      },
-      {
-        "suite": "com.itdong.mail.provider.ProviderMailTest",
-        "tests": 9,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      }
-    ],
-    "total": 47,
-    "failures": 0
-  },
-  "generatedAt": "2026-09-30T06:54:25.629890+00:00",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "generatedAt": "2026-10-02T13:02:25.208628+00:00",
+  "sourceBaseCommit": "2e5047553aab437aff6a079bddd74aaeaa8561bb",
+  "sourceBaseTree": "c2ae413f3bda5662ff2854114132501b5114c68b",
   "java": "21.0.12.1",
   "springBoot": "4.0.8",
   "maven": "3.9.9",
   "flutter": "3.47.5",
   "dart": "3.13.4",
-  "postgresql": "17.11",
-  "flutterTests": 10,
+  "postgresql": {
+    "suites": [
+      {
+        "suite": "com.itdong.mail.MailApiTest",
+        "tests": 24,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.OAuthSettingsApiTest",
+        "tests": 44,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.SecurityConfigTest",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.provider.ProviderHttpTest",
+        "tests": 10,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.provider.ProviderMailTest",
+        "tests": 9,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    ],
+    "total": 92,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "h2": {
+    "suites": [
+      {
+        "suite": "com.itdong.mail.MailApiTest",
+        "tests": 24,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.OAuthSettingsApiTest",
+        "tests": 44,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.SecurityConfigTest",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.provider.ProviderHttpTest",
+        "tests": 10,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "com.itdong.mail.provider.ProviderMailTest",
+        "tests": 9,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    ],
+    "total": 92,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "flutterTests": 36,
   "flutterAnalyze": "passed",
   "flutterWebRelease": "passed",
-  "jarBytes": 57651715,
-  "jarSha256": "618c909d73748bbe1714a5b97c0ec49655ce47cd275be92b6e37d9e3a6382683",
-  "realProviderAcceptance": "not_run_no_authorization",
+  "jarBytes": 57678733,
+  "jarSha256": "c3f8f927ff5e999c5c3c2127cbc62fe4ae55b292d0da3a25c555ebad7016de92",
+  "syntheticUpgradeSmoke": "passed_v0.1.0_to_v0.2.0_accounts_and_draft_preserved",
+  "pythonBlackboxChecks": 9,
+  "dartLiveHttpChecks": 7,
+  "oauthPreviewImages": 6,
+  "realProviderAcceptance": "not_run",
+  "productionDeployment": "not_run",
+  "userLaptopAccess": "not_used",
+  "browserEndToEnd": "not_run",
   "nativeReleaseBuilds": "not_run",
-  "browserEndToEnd": "not_run_cloud_browser_local_address_block",
-  "dockerRuntime": "not_run_docker_unavailable"
+  "dockerRuntime": "not_run"
 }

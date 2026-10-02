@@ -22,7 +22,7 @@ public class MailController {
 
   @GetMapping("/health")
   Object health() {
-    return Json.map("status", "UP", "version", "0.1.0", "demoMode", security.demo);
+    return Json.map("status", "UP", "version", "0.2.0", "demoMode", security.demo);
   }
 
   @PostMapping("/auth/login")
@@ -176,6 +176,8 @@ public class MailController {
         Json.map("maxAttachmentBytes", MailService.MAX_ATTACHMENT),
         "features",
         Json.map(
+            "oauthSettings",
+            true,
             "html",
             false,
             "offlineCache",
@@ -186,6 +188,22 @@ public class MailController {
             false,
             "push",
             false));
+  }
+
+  // All authenticated tokens belong to the sole administrator (owner_user id=1).
+  @GetMapping("/settings/oauth")
+  Object oauthSettings() {
+    return oauth.settings.list();
+  }
+
+  @PutMapping("/settings/oauth/{provider}")
+  Object saveOAuthSettings(@PathVariable String provider, @RequestBody Map<String, Object> body) {
+    return oauth.settings.save(provider, body);
+  }
+
+  @PostMapping("/settings/oauth/{provider}/reset")
+  Object resetOAuthSettings(@PathVariable String provider, @RequestBody Map<String, Object> body) {
+    return oauth.settings.reset(provider, body);
   }
 
   @PostMapping("/oauth/{provider}/start")
