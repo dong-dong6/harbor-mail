@@ -261,9 +261,7 @@ public class MailService {
         throw ApiError.bad("Invalid cursor or changed filters");
       }
     }
-    // Older persisted summaries omit recipients. Read the existing full SENT record
-    // so the list works immediately after upgrade without a data rewrite or re-sync.
-    String sql = "SELECT CASE WHEN folder='SENT' THEN data ELSE COALESCE(summary,data) END AS data FROM mail_message WHERE 1=1";
+    String sql = "SELECT COALESCE(summary,data) AS data, folder AS message_folder FROM mail_message WHERE 1=1";
     List<Object> args = new ArrayList<>();
     if (!accountId.isBlank()) {
       account(accountId);
@@ -284,7 +282,12 @@ public class MailService {
     // v0.1 bounded local read-model search; no claim of full provider search.
     var filtered =
         store.db.queryForList(sql, args.toArray()).stream()
-            .map(r -> Json.decode((String) r.get("data")))
+            .map(r -> {
+              var message = Json.decode((String) r.get("data"));
+              // Persisted summaries omit folder; only trust the indexed SQL value.
+              message.put("folder", r.get("message_folder"));
+              return message;
+            })
             .filter(m -> !folder.equals("STARRED") || Boolean.TRUE.equals(m.get("isStarred")))
             .filter(m -> !unread || !Boolean.TRUE.equals(m.get("isRead")))
             .filter(
@@ -303,6 +306,23 @@ public class MailService {
             .toList();
     boolean more = filtered.size() > limit;
     var page = filtered.subList(0, Math.min(limit, filtered.size()));
+    // Hydrate only visible legacy SENT rows. Never load every SENT body before pagination.
+    var missingRecipients = page.stream()
+        .filter(m -> "SENT".equals(m.get("folder")) && !m.containsKey("to"))
+        .map(m -> Json.string(m, "id"))
+        .toList();
+    if (!missingRecipients.isEmpty()) {
+      var recipientsById = new HashMap<String, Object>();
+      String placeholders = String.join(",", Collections.nCopies(missingRecipients.size(), "?"));
+      for (var row : store.db.queryForList(
+          "SELECT id,data FROM mail_message WHERE id IN (" + placeholders + ")",
+          missingRecipients.toArray())) {
+        var full = Json.decode((String) row.get("data"));
+        recipientsById.put((String) row.get("id"), full.getOrDefault("to", List.of()));
+      }
+      page.stream().filter(m -> missingRecipients.contains(Json.string(m, "id")))
+          .forEach(m -> m.put("to", recipientsById.getOrDefault(Json.string(m, "id"), List.of())));
+    }
     String next = null;
     if (more) {
       var m = page.getLast();

@@ -304,6 +304,18 @@ class MailApiTest {
         Json.encode(legacySummary), "sent-" + sent.get("id"));
     assertEquals(d.get("to"), items(call("GET", "/messages?folder=SENT", null, token, null))
         .get(0).get("to"));
+    // An off-page legacy row must not hydrate or decode its body during this page request.
+    var older = new java.util.LinkedHashMap<>(mail.detail("sent-" + sent.get("id")));
+    older.put("id", "older-sent");
+    older.put("receivedAt", "2000-01-01T00:00:00Z");
+    mail.insertMessage("older-sent", Json.string(older, "accountId"), "older-sent", older);
+    var olderSummary = mail.summary(older);
+    olderSummary.remove("to");
+    store.db.update("UPDATE mail_message SET summary=?,data=? WHERE id='older-sent'",
+        Json.encode(olderSummary), "off-page-body-must-not-be-decoded");
+    var boundedPage = items(call("GET", "/messages?folder=SENT&limit=1", null, token, null));
+    assertEquals(1, boundedPage.size());
+    assertEquals(d.get("to"), boundedPage.get(0).get("to"));
     for (String privateField : List.of("bodyText", "bodyHtml", "bcc", "cc", "attachments")) {
       assertFalse(sentRows.get(0).containsKey(privateField));
     }

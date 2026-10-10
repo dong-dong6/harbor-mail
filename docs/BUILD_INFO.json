@@ -1,6 +1,6 @@
 {
   "version": "0.2.1",
-  "generatedAt": "2026-10-10T09:37:44.447231+00:00",
+  "generatedAt": "2026-10-10T09:47:24.167076+00:00",
   "sourceBaseCommit": "4004ebed92503fc60e8c0fc127536f6ddc6710b8",
   "sourceBaseTree": "f5a43ca88d246417019762a251a18204aaee38a0",
   "java": "21.0.12.1",
@@ -55,9 +55,9 @@
   "flutterTests": 48,
   "flutterAnalyze": "passed",
   "flutterWebRelease": "passed",
-  "jarBytes": 57685358,
-  "jarSha256": "c354dd8e913431acdd1f7d064667c16a46751e5cacacb29c4f3da6dec68a749e",
-  "legacySentSummaryCompatibility": "passed_API_regression_without_database_rewrite",
+  "jarBytes": 57686075,
+  "jarSha256": "b2381f8b5267d8f206db781799548da050f3f630ecc79b20d43f310a80e42704",
+  "legacySentSummaryCompatibility": "passed_page_bounded_batch_hydration_without_database_rewrite",
   "mailboxPreviewImages": 15,
   "previewViewports": [
     1440,
