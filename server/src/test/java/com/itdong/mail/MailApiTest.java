@@ -8,6 +8,7 @@ import java.util.*;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.info.BuildProperties;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -26,6 +27,7 @@ class MailApiTest {
   @Autowired Security security;
   @Autowired MailService mail;
   @Autowired JobWorker worker;
+  @Autowired BuildProperties build;
   final HttpClient http = HttpClient.newHttpClient();
   String token;
 
@@ -102,6 +104,16 @@ class MailApiTest {
                 "Original frozen body"),
             token,
             null));
+  }
+
+  @Test
+  void healthReportsGeneratedBuildVersion() throws Exception {
+    assertEquals("mail-server", build.getArtifact());
+    assertNotNull(build.getVersion());
+    assertTrue(build.getVersion().matches("\\d+\\.\\d+\\.\\d+"));
+    var health = call("GET", "/health", null, null, null);
+    assertEquals(200, health.statusCode());
+    assertEquals(build.getVersion(), json(health).get("version"));
   }
 
   @Test

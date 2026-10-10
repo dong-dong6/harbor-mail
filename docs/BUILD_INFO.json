@@ -1,6 +1,6 @@
 {
   "version": "0.2.1",
-  "generatedAt": "2026-10-10T09:47:24.167076+00:00",
+  "generatedAt": "2026-10-10T10:08:38.179151+00:00",
   "sourceBaseCommit": "4004ebed92503fc60e8c0fc127536f6ddc6710b8",
   "sourceBaseTree": "f5a43ca88d246417019762a251a18204aaee38a0",
   "java": "21.0.12.1",
@@ -13,7 +13,7 @@
     "suites": [
       {
         "suite": "com.itdong.mail.MailApiTest",
-        "tests": 24,
+        "tests": 25,
         "failures": 0,
         "errors": 0,
         "skipped": 0
@@ -47,7 +47,7 @@
         "skipped": 0
       }
     ],
-    "total": 92,
+    "total": 93,
     "failures": 0,
     "errors": 0,
     "skipped": 0
@@ -55,8 +55,8 @@
   "flutterTests": 48,
   "flutterAnalyze": "passed",
   "flutterWebRelease": "passed",
-  "jarBytes": 57686075,
-  "jarSha256": "b2381f8b5267d8f206db781799548da050f3f630ecc79b20d43f310a80e42704",
+  "jarBytes": 57686458,
+  "jarSha256": "28b3683d4867ccf46a4aa7b8b2de913d22d53e9fb0b845eef383394ee607e663",
   "legacySentSummaryCompatibility": "passed_page_bounded_batch_hydration_without_database_rewrite",
   "mailboxPreviewImages": 15,
   "previewViewports": [
@@ -70,8 +70,10 @@
   "browserEndToEnd": "not_run; cloud browser cannot access execution loopback; Flutter widget rendering verified",
   "nativeReleaseBuilds": "not_run",
   "dockerRuntime": "not_run",
-  "pythonBlackboxChecks": 9,
+  "pythonBlackboxChecks": 10,
   "dartLiveHttpChecks": 7,
   "integratedStaticByteMatch": "passed",
-  "servedVersion": "0.2.1+3"
+  "servedVersion": "0.2.1+3",
+  "healthVersionSource": "Spring Boot BuildProperties generated from Maven project.version",
+  "healthFrontendSourceVersionConsistency": "passed_0.2.1"
 }

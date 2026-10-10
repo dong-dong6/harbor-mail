@@ -4,6 +4,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import org.springframework.http.*;
+import org.springframework.boot.info.BuildProperties;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -13,16 +14,18 @@ public class MailController {
   final MailService mail;
   final Security security;
   final OAuthService oauth;
+  final BuildProperties build;
 
-  MailController(MailService mail, Security security, OAuthService oauth) {
+  MailController(MailService mail, Security security, OAuthService oauth, BuildProperties build) {
     this.mail = mail;
     this.security = security;
     this.oauth = oauth;
+    this.build = build;
   }
 
   @GetMapping("/health")
   Object health() {
-    return Json.map("status", "UP", "version", "0.2.0", "demoMode", security.demo);
+    return Json.map("status", "UP", "version", build.getVersion(), "demoMode", security.demo);
   }
 
   @PostMapping("/auth/login")

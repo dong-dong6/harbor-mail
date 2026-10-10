@@ -7,13 +7,15 @@
 - Flutter analyze：零问题。
 - Flutter test：48 项通过，零失败；含新增 12 项列表、导航、分页和窄屏回归。
 - Flutter Web release：构建成功，使用本地 Web 资源。
-- Maven clean verify / H2：92 项通过，零失败、错误、跳过。
+- Maven clean verify / H2：93 项通过，零失败、错误、跳过。
 - 真实 Flutter widget 渲染：桌面 1440px、手机 390px、窄屏 320px，各覆盖列表、阅读、首次连接、写信、账户设置，共 15 张截图；人工查看代表性截图，无溢出。
-- 集成 JAR：9 组 Python 黑盒和 7 组真实 Dart HTTP 检查通过，使用新建回环地址合成环境；服务结束后已停止。
+- 集成 JAR：10 组 Python 黑盒和 7 组真实 Dart HTTP 检查通过，使用新建回环地址合成环境；服务结束后已停止。
 - 集成静态文件：JAR 和 HTTP 的 main.dart.js 与最终 Web 输出逐字节一致；/version.json 为 0.2.1+3。
 - 补丁空白检查：通过。
 
 ## 本版回归重点
+
+- health 版本来自 Maven 生成的 Spring Boot BuildProperties，禁止手写漂移；API 测试比较生成版本，集成冒烟进一步对比 health、源码清单和 Web version.json。
 
 - 全宽列表默认展示；点击进入阅读，返回列表。
 - 账户、文件夹、搜索、返回和后续详情请求使旧详情结果失效；过期失败不污染当前画面。

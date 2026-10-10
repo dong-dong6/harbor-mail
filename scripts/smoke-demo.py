@@ -8,6 +8,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import subprocess
+import sys
+from pathlib import Path
 
 p = argparse.ArgumentParser()
 p.add_argument('--url', default='http://127.0.0.1:8080')
@@ -42,6 +45,13 @@ try:
     health = request('GET', '/health')
     assert health.get('demoMode') is True, 'Refusing non-demo server: real mail MUST NOT be touched.'
     passed('explicit synthetic demo gate')
+    source_version = subprocess.check_output(
+        [sys.executable, str(Path(__file__).resolve().parent / 'check-version.py')], text=True).strip()
+    with urllib.request.urlopen(a.url.rstrip('/') + '/version.json', timeout=20) as response:
+        frontend_version = json.load(response)['version'].split('+')[0]
+    assert health.get('version') == source_version == frontend_version, (
+        f"Version mismatch: health={health.get('version')}, source={source_version}, frontend={frontend_version}")
+    passed('server build, frontend and source versions agree')
     request('GET', '/accounts', expected=401)
     request('POST', '/auth/login', {'username':'demo','password':'wrong-password'}, expected=401)
     passed('authentication required and invalid password rejected')
