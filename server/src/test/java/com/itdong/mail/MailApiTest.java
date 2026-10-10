@@ -199,6 +199,8 @@ class MailApiTest {
   void paginationStableAndFilterBound() throws Exception {
     var first = json(call("GET", "/messages?limit=3", null, token, null));
     assertEquals(true, first.get("hasMore"));
+    assertFalse(items(call("GET", "/messages?folder=INBOX&limit=1", null, token, null))
+        .get(0).containsKey("to"));
     String c = (String) first.get("nextCursor");
     var second = json(call("GET", "/messages?limit=3&cursor=" + c, null, token, null));
     assertNotEquals(first.get("items"), second.get("items"));
@@ -293,7 +295,18 @@ class MailApiTest {
         "SENT_COPY_CONFIRMED",
         json(call("GET", "/send-intents/" + sent.get("id"), null, token, null)).get("status"));
     assertEquals("Original frozen body", mail.detail("sent-" + sent.get("id")).get("bodyText"));
-    assertEquals(1, items(call("GET", "/messages?folder=SENT", null, token, null)).size());
+    var sentRows = items(call("GET", "/messages?folder=SENT", null, token, null));
+    assertEquals(1, sentRows.size());
+    assertEquals(d.get("to"), sentRows.get(0).get("to"));
+    var legacySummary = new java.util.LinkedHashMap<>(sentRows.get(0));
+    legacySummary.remove("to");
+    store.db.update("UPDATE mail_message SET summary=? WHERE id=?",
+        Json.encode(legacySummary), "sent-" + sent.get("id"));
+    assertEquals(d.get("to"), items(call("GET", "/messages?folder=SENT", null, token, null))
+        .get(0).get("to"));
+    for (String privateField : List.of("bodyText", "bodyHtml", "bcc", "cc", "attachments")) {
+      assertFalse(sentRows.get(0).containsKey(privateField));
+    }
     var duplicate =
         json(call("POST", "/drafts/" + id + "/send", Json.map("revision", 1), token, "send-key"));
     assertEquals(sent.get("id"), duplicate.get("id"));

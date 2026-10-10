@@ -18,6 +18,7 @@ with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
         if rel.parts[0]=='dist' and rel.name!='mail-client.jar': continue
         if str(rel).startswith('server/src/main/resources/static/'): continue
         if rel.name=='.env' or rel.name.startswith('.env.') and rel.name!='.env.example': continue
+        if rel.name.startswith('.attach_pid'): continue
         if rel.name.endswith('.log') or rel.name=='local.properties' or rel.name.startswith('.flutter-plugins'): continue
         if rel.name.endswith(('.iml','.xcuserstate')) or rel.name in {'Generated.xcconfig','flutter_export_environment.sh','.DS_Store'}: continue
         z.write(p,pathlib.Path(name)/rel)

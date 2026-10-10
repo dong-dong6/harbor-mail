@@ -261,7 +261,9 @@ public class MailService {
         throw ApiError.bad("Invalid cursor or changed filters");
       }
     }
-    String sql = "SELECT COALESCE(summary,data) AS data FROM mail_message WHERE 1=1";
+    // Older persisted summaries omit recipients. Read the existing full SENT record
+    // so the list works immediately after upgrade without a data rewrite or re-sync.
+    String sql = "SELECT CASE WHEN folder='SENT' THEN data ELSE COALESCE(summary,data) END AS data FROM mail_message WHERE 1=1";
     List<Object> args = new ArrayList<>();
     if (!accountId.isBlank()) {
       account(accountId);
@@ -342,6 +344,10 @@ public class MailService {
             "messageId",
             "updatedAt")
         .forEach(copy::remove);
+    // Sent-list rows identify recipients without exposing bodies, Bcc or attachments.
+    if ("SENT".equals(m.get("folder"))) {
+      copy.put("to", m.getOrDefault("to", List.of()));
+    }
     return copy;
   }
 
