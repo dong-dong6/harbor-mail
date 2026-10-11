@@ -8,6 +8,7 @@ const cases=[
  ['URLs', '<a href="javascript:alert(1)">x</a><a href="data:text/html,x">y</a><a href="https://example.com?a=1">read</a>',s=>!s.includes('javascript:')&&!s.includes('data:text')&&s.includes('noopener noreferrer')],
  ['remote images', '<img src="https://tracking.invalid/pixel" srcset="https://tracking.invalid/2x 2x"><video poster="https://tracking.invalid/poster"></video>',s=>!s.includes('src=')&&!s.includes('srcset')&&!s.includes('poster')],
  ['CSS', '<p style="color:red;position:fixed;background:url(https://tracking.invalid);width:50%;border-radius:24px">x</p>',s=>s.includes('color:red')&&s.includes('border-radius:24px')&&!s.includes('position:')&&!s.includes('url(')],
+ ['expanded CSS longhands', '<p style="border:2px solid red;border-radius:24px;border-top-left-radius:12px;padding:16px 24px">x</p>',s=>s.includes('border-top-left-radius:12px')&&s.includes('border-top-width:2px')&&s.includes('border-top-style:solid')&&s.includes('border-top-color:red')&&s.includes('padding-left:24px')],
  ['active elements','<svg><a xlink:href="javascript:x">x</a></svg><iframe src="https://tracking.invalid"></iframe><form><input></form><object></object><base href="https://tracking.invalid"><meta http-equiv="refresh">',s=>!s.includes('<svg')&&!s.includes('<iframe')&&!s.includes('<form')&&!s.includes('<object')&&!s.includes('<base')&&!s.includes('refresh')],
  ['tables','<table width="600" bgcolor="#edf9df"><tr><td style="padding:24px">A</td><td>B</td></tr></table>',s=>s.includes('<table')&&s.includes('bgcolor="#edf9df"')&&s.includes('padding:24px')&&s.includes('<td>B</td>')],
  ['embedded images','<img src="cid:local" alt="diagram"><img src="data:image/svg+xml,x">',s=>s.includes('[diagram]')&&!s.includes('src=')],
@@ -19,4 +20,4 @@ const allowed=render('<img src="https://example.com/image" onerror="alert(1)"><i
 assert(allowed.includes('src="https://example.com/image"'));assert(allowed.includes('referrerpolicy="no-referrer"'));assert(!allowed.includes('onerror'));assert(!allowed.includes('data:image'));
 assert(!render('<img src="https://example.com/image">',false).includes('src='));
 console.log('PASS explicit opt-in and reset');
-console.log('10 sanitizer checks passed (DOM unit tests; not browser integration).');
+console.log('11 sanitizer checks passed (DOM unit tests; not browser integration).');

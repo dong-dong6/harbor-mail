@@ -4,7 +4,7 @@
   'use strict';
   const tags = new Set('a abbr b blockquote br caption center code col colgroup dd del div dl dt em font h1 h2 h3 h4 h5 h6 hr i img li ol p pre s small span strong sub sup table tbody td th thead tfoot tr u ul'.split(' '));
   const drop = new Set('script style iframe frame frameset object embed svg math form input button textarea select option link meta base template noscript audio video source track'.split(' '));
-  const properties = new Set(('background background-color color font font-family font-size font-style font-weight line-height text-align text-decoration text-transform letter-spacing word-spacing white-space vertical-align border border-top border-right border-bottom border-left border-color border-width border-style border-radius border-collapse border-spacing padding padding-top padding-right padding-bottom padding-left margin margin-top margin-right margin-bottom margin-left width max-width min-width height max-height min-height display table-layout overflow overflow-wrap word-break list-style-type').split(' '));
+  const properties = new Set(('background background-color color font font-family font-size font-style font-weight line-height text-align text-decoration text-decoration-line text-decoration-style text-decoration-color text-decoration-thickness text-transform letter-spacing word-spacing white-space vertical-align border border-top border-right border-bottom border-left border-color border-width border-style border-radius border-top-left-radius border-top-right-radius border-bottom-left-radius border-bottom-right-radius border-top-width border-right-width border-bottom-width border-left-width border-top-style border-right-style border-bottom-style border-left-style border-top-color border-right-color border-bottom-color border-left-color border-collapse border-spacing padding padding-top padding-right padding-bottom padding-left margin margin-top margin-right margin-bottom margin-left width max-width min-width height max-height min-height display table-layout overflow overflow-x overflow-y overflow-wrap word-break list-style-type').split(' '));
   function safeUrl(raw) {
     try {
       const u = new URL(raw);
@@ -16,8 +16,12 @@
     const probe = document.createElement('span');
     probe.style.cssText = raw;
     const result = [];
-    for (const name of probe.style) {
+    // Chromium expands indexed CSSOM entries into longhands (unlike jsdom).
+    // Read the supported properties by name, including longhands, so shorthand
+    // border radius/width/style/color survives consistently across engines.
+    for (const name of properties) {
       const value = probe.style.getPropertyValue(name);
+      if (!value) continue;
       // No URLs, escapes, custom variables or executable/unknown functions.
       if (!properties.has(name) || /[\\@<>]|url\s*\(|expression|var\s*\(/i.test(value)) continue;
       if (/([a-z-]+)\s*\(/ig.test(value) && !/^(rgba?|hsla?)\([\d\s.,%/+\-deg]+\)$/i.test(value)) continue;

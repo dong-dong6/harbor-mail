@@ -14,10 +14,14 @@ Base: deployed v0.2.1 source at `0ffea0a83de28086745c25e0c0d6193174459d2e`.
 - Combined Dart static analysis: no issues.
 - Combined Flutter widget suite: 51 tests passed, including four-size account navigation renders and narrow reader/compose regressions.
 - OAuth browser protocol unit harness: 9 tests passed.
-- HTML sanitizer DOM unit harness: 10 checks passed (active content/unsafe URL/CSS removal, presentation allowlist, blocked images, explicit opt-in and reset).
+- HTML sanitizer DOM unit harness: 11 checks passed (active content/unsafe URL/CSS removal, presentation allowlist, blocked images, explicit opt-in and reset).
 - Web release build with local Web resources: passed. Final Web assets were packaged into the integrated JAR; the served mail renderer was byte-compared with its source.
 - Integrated synthetic demo smoke: 10 checks passed (auth, version agreement, message detail/pagination, durable mutations/drafts, synthetic send idempotency, change feed and token revocation). The release JAR checksum is recorded in BUILD_INFO.json.
 - Actual Flutter widget renders inspected at 1440×960, 800×600, 390×844 and 320×720; no clipping/overflow errors found. These are synthetic widget renders, not live browser screenshots.
+
+## Chromium CI follow-up
+
+The first browser run identified a test synchronization race on popup closure, fixed by awaiting its actual close event. The next run passed all nine OAuth browser cases and caught Chromium CSSOM expanding border shorthands. The renderer now reads safe properties by name and permits explicit border/radius longhands; regression checks retain presentation assertions. Final exact-commit CI is required after this repair.
 
 ## Remaining acceptance limits
 

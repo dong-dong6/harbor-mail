@@ -69,7 +69,7 @@
   "flutterAnalyze": "passed",
   "flutterWebRelease": "passed",
   "nodeOAuthProtocolTests": 9,
-  "htmlDomSecurityChecks": 10,
+  "htmlDomSecurityChecks": 11,
   "previewViewports": [
     1440,
     390,
@@ -81,13 +81,14 @@
   "healthVersionSource": "Spring Boot BuildProperties generated from Maven project.version",
   "healthFrontendSourceVersionConsistency": "passed_0.2.2",
   "postgresql": "not_run_locally; exact-commit CI required",
-  "browserEndToEnd": "not_run_locally; synthetic Chromium harnesses now required in CI",
+  "browserEndToEnd": "all nine OAuth browser scenarios passed in CI; HTML CSSOM compatibility repair awaiting final exact-commit CI",
   "realProviderAcceptance": "not_run",
   "productionDeployment": "handled_separately_by_owner",
   "nativeReleaseBuilds": "not_run",
   "dockerRuntime": "not_run",
   "publicationState": "pre-publication validation snapshot; see exact-commit CI for published artifact provenance",
-  "jarBytes": 57720229,
-  "jarSha256": "5528055769607ab11dc4a9eaa4184bfd7918dffaaff79c12ae8e09a9bcb9f5cc",
-  "integratedStaticByteMatch": "passed"
+  "integratedStaticByteMatch": "passed",
+  "jarSha256BeforeCssomRepair": "5528055769607ab11dc4a9eaa4184bfd7918dffaaff79c12ae8e09a9bcb9f5cc",
+  "jarBytesBeforeCssomRepair": 57720229,
+  "localJarStatus": "pre-CSSOM-repair artifact; deploy final passing CI artifact only"
 }
