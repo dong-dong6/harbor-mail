@@ -37,6 +37,11 @@ const server = createServer((req, res) => {
     await page.click('#start');
     return { popup: await popupEvent, id: await page.evaluate(() => flowId) };
   }
+  async function expectClosed(popup) {
+    // Chromium reports closure asynchronously, after the page's close() call.
+    if (!popup.isClosed()) await popup.waitForEvent('close', { timeout: 5000 });
+    assert.equal(popup.isClosed(), true);
+  }
   try {
     await check('popup returns once to original in-memory page', async page => {
       await page.evaluate(() => { window.sessionFixture = 'synthetic-memory-only'; });
@@ -48,14 +53,14 @@ const server = createServer((req, res) => {
       await page.evaluate(id => { const b = new BroadcastChannel('harbor-mail-oauth-' + id); b.postMessage('harbor-mail-connected'); b.close(); }, id);
       await page.waitForTimeout(100);
       assert.equal(await page.evaluate(() => count), 1);
-      assert.equal(popup.isClosed(), true);
+      await expectClosed(popup);
     });
     await check('provider removes opener: same-origin channel still returns', async page => {
       const { popup, id } = await start(page);
       await popup.evaluate(() => { window.opener = null; });
       await popup.goto(base + '/oauth-complete.html#' + id).catch(e => { if (!popup.isClosed()) throw e; });
       await page.waitForFunction(() => count === 1);
-      assert.equal(popup.isClosed(), true);
+      await expectClosed(popup);
     });
     await check('postMessage fallback verifies origin and source', async page => {
       await page.evaluate(() => { window.BroadcastChannel = undefined; });
@@ -78,7 +83,7 @@ const server = createServer((req, res) => {
       const { popup, id } = await start(page);
       assert.equal(await page.evaluate(id => HarborOAuth.open(id, 'javascript:alert(1)'), id), false);
       await page.evaluate(id => HarborOAuth.cancel(id), id);
-      assert.equal(popup.isClosed(), true);
+      await expectClosed(popup);
       assert.equal(await page.evaluate(id => HarborOAuth.open(id, 'https://example.test'), id), false);
       assert.equal(await page.evaluate(() => count), 0);
     });
