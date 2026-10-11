@@ -66,6 +66,18 @@ jobs:
           mvn --version
           flutter --version
           python3 scripts/check-version.py
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Test synthetic OAuth and isolated HTML rendering
+        shell: bash
+        run: |
+          npm ci --prefix client/tool --ignore-scripts --no-audit --no-fund
+          npm test --prefix client/tool
+          client/tool/node_modules/.bin/playwright install --with-deps chromium
+          BROWSER_PATH=$(node -e "process.stdout.write(require('./client/tool/node_modules/playwright').chromium.executablePath())")
+          CHROMIUM="$BROWSER_PATH" CHROMIUM_PATH="$BROWSER_PATH" npm run test:browser --prefix client/tool
       - name: Analyze, test (H2), build Web, and package integrated JAR
         run: bash scripts/build.sh
       - name: Preserve H2 test reports

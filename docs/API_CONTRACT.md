@@ -14,7 +14,7 @@ All subsequent API routes Bearer authentication. API failures `{error:{code,mess
 - POST `/accounts/{id}/sync`: ->202 `{jobId,status:"QUEUED"}`; merge duplicate jobs
 - GET `/accounts/{id}/folders`: `{items:[{id,name,role,unreadCount}]}`
 - GET `/messages?accountId=&folder=INBOX|SENT|TRASH|ARCHIVE|STARRED&query=&unreadOnly=false&cursor=&limit=50`: `{items:[{id,accountId,fromName,fromAddress,subject,snippet,receivedAt,isRead,isStarred,hasAttachments,revision}],nextCursor,hasMore,coverage:"DEMO"|"RECENT"|"PARTIAL"|"FULL"}`; empty accountId unified view. Query optional. Enforce max page size. Cursor pagination stable.
-- GET `/messages/{id}`: above fields plus `{to:[{name,address}],cc:[{name,address}],bodyText,bodyHtml,folder,attachments:[{id,fileName,contentType,size}]}`. Server HTML sanitized; client v0.1 default plain text, no raw HTML execution. Fetch detail never marks read by itself.
+- GET `/messages/{id}`: above fields plus `{to:[{name,address}],cc:[{name,address}],bodyText,bodyHtml,folder,attachments:[{id,fileName,contentType,size}]}`. bodyHtml is bounded, untrusted HTML. The Web reader sanitizes it and isolates it in a script-free, opaque-origin sandbox; remote images are blocked until per-message opt-in. Never insert bodyHtml into the application DOM. Non-Web clients use bodyText. Fetch detail never marks read by itself.
 - POST `/commands`, header `Idempotency-Key`, body `{type:"SET_READ"|"SET_STAR"|"TRASH"|"ARCHIVE"|"RESTORE",messageId,baseRevision,value?:boolean}` ->202 `{id,status}`
 - GET `/commands/{id}`: `{id,status,errorCode,messageId}`. Demo mutation can finish immediately, real provider failure explicit. No fake provider success.
 - GET `/attachments/{id}/content`: authenticated stream, safe content disposition. No arbitrary URL fetching.
@@ -30,7 +30,7 @@ All subsequent API routes Bearer authentication. API failures `{error:{code,mess
 - GET `/send-intents/{id}`: intent info. Status QUEUED/PREPARING/SUBMITTING/ACCEPTED/SENT_COPY_CONFIRMED/FAILED/UNKNOWN. Unknown outcomes NEVER blindly retried.
 
 ## Configuration and OAuth
-- GET `/settings/capabilities`: `{demoMode,providers:[{provider,configured,supportsOAuth,supportsImap}],limits:{maxAttachmentBytes},features:{html:false,offlineCache:false}}`. Frontend show unsupported features honestly.
+- GET `/settings/capabilities`: `{demoMode,providers:[{provider,configured,supportsOAuth,supportsImap}],limits:{maxAttachmentBytes},features:{html:true,offlineCache:false}}`. Frontend show unsupported features honestly.
 - POST `/oauth/{provider}/start` `{}` where provider GMAIL/OUTLOOK/EXCHANGE -> `{authorizationUrl}` (or actionable PROVIDER_NOT_CONFIGURED). HTTPS redirect must be configured by operator. Single-use state bound to owner and TTL. Browser system authorization popup; callback validates state, stores encrypted tokens, returns safe status page without secrets. No built-in real credentials.
 - GET `/oauth/{provider}/callback` public OAuth callback only. Implement providers actual OAuth if feasible; never pretend connected without real callback.
 - GET `/changes?after=...`: `{items:[{seq,type,entityId,revision}],nextCursor,hasMore}`. Need commit-order guarantee; fail410 for expired generation. Client may initially poll refreshed lists instead but document sync limitations.

@@ -106,6 +106,136 @@ class MailApiTest {
             null));
   }
 
+  com.itdong.mail.provider.ProviderGateway.Mail fixtureBody(String text, String html) {
+    return new com.itdong.mail.provider.ProviderGateway.Mail(
+        "demo-0-0",
+        "INBOX",
+        "Fixture",
+        "sender@example.invalid",
+        List.of(),
+        List.of(),
+        "HTML fixture",
+        "Preview",
+        java.time.Instant.EPOCH,
+        false,
+        false,
+        false,
+        text,
+        html,
+        List.of());
+  }
+
+  MailService connectedService(com.itdong.mail.provider.ProviderGateway provider) {
+    Security connected = new Security(store, false, "", "", "", "127.0.0.1", "");
+    return new MailService(store, connected, null, provider) {
+      @Override
+      com.itdong.mail.provider.ProviderGateway.Credentials credentials(String id) {
+        return new com.itdong.mail.provider.ProviderGateway.Credentials(
+            "GMAIL", "owner@example.invalid", "synthetic-token", null);
+      }
+    };
+  }
+
+  @Test
+  void oldFlattenedBodyIsUpgradedOnceAndSurvivesMetadataSync() {
+    var gateway = org.mockito.Mockito.mock(com.itdong.mail.provider.ProviderGateway.class);
+    var service = connectedService(gateway);
+    String html = "<h1>Heading</h1><p>Body with <b>formatting</b></p>";
+    var remote = fixtureBody("Heading\nBody with formatting", html);
+    org.mockito.Mockito.when(
+            gateway.body(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("demo-0-0")))
+        .thenReturn(remote);
+    org.mockito.Mockito.when(
+            gateway.sync(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.eq(100)))
+        .thenAnswer(
+            invocation ->
+                new com.itdong.mail.provider.ProviderGateway.SyncPage(
+                    "INBOX".equals(invocation.getArgument(1))
+                        ? List.of(fixtureBody("", ""))
+                        : List.of(),
+                    null,
+                    false,
+                    "PARTIAL"));
+    var legacy = store.data("mail_message", "demo-0-0");
+    legacy.put("bodyFetched", true);
+    legacy.put("bodyText", "Old flattened cache");
+    store.db.update("UPDATE mail_message SET data=? WHERE id=?", Json.encode(legacy), "demo-0-0");
+
+    var detail = service.detail("demo-0-0");
+    assertEquals(html, detail.get("bodyHtml"));
+    assertEquals(remote.bodyText(), detail.get("bodyText"));
+    assertEquals(MailService.BODY_RENDER_VERSION, detail.get("bodyRenderVersion"));
+    assertEquals(html, service.detail("demo-0-0").get("bodyHtml"));
+    new JobWorker(service, false).sync("no-real-job", "demo-gmail");
+    assertEquals(html, service.detail("demo-0-0").get("bodyHtml"));
+    org.mockito.Mockito.verify(gateway, org.mockito.Mockito.times(1))
+        .body(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("demo-0-0"));
+    var summary = service.summary(store.data("mail_message", "demo-0-0"));
+    assertFalse(summary.containsKey("bodyHtml"));
+    assertFalse(summary.containsKey("bodyText"));
+    assertFalse(summary.containsKey("bodyFetched"));
+    assertFalse(summary.containsKey("bodyRenderVersion"));
+  }
+
+  @Test
+  void fetchedPlainOrEmptyBodyDoesNotRefetchJustBecauseHtmlIsEmpty() {
+    var gateway = org.mockito.Mockito.mock(com.itdong.mail.provider.ProviderGateway.class);
+    var service = connectedService(gateway);
+    org.mockito.Mockito.when(
+            gateway.body(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("demo-0-0")))
+        .thenReturn(fixtureBody("", ""));
+    assertEquals("", service.detail("demo-0-0").get("bodyHtml"));
+    assertEquals("", service.detail("demo-0-0").get("bodyText"));
+    org.mockito.Mockito.verify(gateway, org.mockito.Mockito.times(1))
+        .body(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("demo-0-0"));
+  }
+
+  @Test
+  void capabilitiesAdvertiseHtmlReader() throws Exception {
+    var response = call("GET", "/settings/capabilities", null, token, null);
+    assertEquals(200, response.statusCode());
+    assertEquals(true, ((Map<?, ?>) json(response).get("features")).get("html"));
+  }
+
+  @Test
+  void htmlDetailRemainsJsonAndListDoesNotExposeBodies() throws Exception {
+    String html = "<script>bad()</script><p onclick='bad()'>Untrusted body</p>";
+    var data = store.data("mail_message", "demo-0-0");
+    data.put("bodyHtml", html);
+    store.db.update("UPDATE mail_message SET data=? WHERE id=?", Json.encode(data), "demo-0-0");
+    var response = call("GET", "/messages/demo-0-0", null, token, null);
+    assertEquals(200, response.statusCode());
+    assertTrue(
+        response.headers().firstValue("Content-Type").orElse("").startsWith("application/json"));
+    assertEquals(
+        "default-src 'none'; frame-ancestors 'none'",
+        response.headers().firstValue("Content-Security-Policy").orElse(""));
+    assertEquals(html, json(response).get("bodyHtml"));
+    var listing = call("GET", "/messages", null, token, null);
+    assertFalse(listing.body().contains("bodyHtml"));
+    assertFalse(listing.body().contains("Untrusted body"));
+  }
+
+  @Test
+  void normalizationKeepsBoundedUntrustedHtml() {
+    String html = "<p onclick='bad()'>Untrusted</p>";
+    assertEquals(
+        html,
+        JobWorker.normalize("fixture", "demo-gmail", fixtureBody("Untrusted", html), 1)
+            .get("bodyHtml"));
+    assertThrows(
+        ApiError.class,
+        () ->
+            JobWorker.normalize(
+                "fixture", "demo-gmail", fixtureBody("", "x".repeat(2_000_001)), 1));
+  }
+
   @Test
   void healthReportsGeneratedBuildVersion() throws Exception {
     assertEquals("mail-server", build.getArtifact());

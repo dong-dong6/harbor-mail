@@ -42,6 +42,7 @@ final class GmailAdapter implements ProviderGateway {
     for (JsonNode n : page.path("messages"))
       result.add(
           parse(
+              c,
               call(
                   c,
                   "GET",
@@ -55,10 +56,12 @@ final class GmailAdapter implements ProviderGateway {
 
   public Mail body(Credentials c, String id) {
     return parse(
-        call(c, "GET", "/messages/" + HttpTransport.enc(id) + "?format=full", null, false), true);
+        c,
+        call(c, "GET", "/messages/" + HttpTransport.enc(id) + "?format=full", null, false),
+        true);
   }
 
-  Mail parse(JsonNode n, boolean full) {
+  Mail parse(Credentials c, JsonNode n, boolean full) {
     JsonNode payload = n.path("payload");
     Map<String, String> h = new HashMap<>();
     for (JsonNode v : payload.path("headers"))
@@ -66,9 +69,9 @@ final class GmailAdapter implements ProviderGateway {
     List<Address> from = addresses(h.get("from"));
     Set<String> labels = new HashSet<>();
     n.path("labelIds").forEach(v -> labels.add(v.asText()));
-    StringBuilder text = new StringBuilder();
     List<Attachment> att = new ArrayList<>();
-    parts(payload, text, att, full, 0);
+    MimeSupport.Body body =
+        parts(c, n.path("id").asText(), payload, att, full, 0, new MimeSupport.ParseBudget());
     return new Mail(
         n.path("id").asText(),
         labels.contains("TRASH")
@@ -84,8 +87,8 @@ final class GmailAdapter implements ProviderGateway {
         !labels.contains("UNREAD"),
         labels.contains("STARRED"),
         !att.isEmpty(),
-        text.toString(),
-        "",
+        body.fallbackText(),
+        body.html(),
         att);
   }
 
@@ -99,28 +102,93 @@ final class GmailAdapter implements ProviderGateway {
     }
   }
 
-  void parts(JsonNode p, StringBuilder text, List<Attachment> att, boolean full, int depth) {
-    if (depth > 20) throw new ProviderException("MIME_LIMIT", false);
-    if (!p.path("filename").asText().isBlank())
+  static String header(JsonNode p, String name) {
+    for (JsonNode h : p.path("headers"))
+      if (name.equalsIgnoreCase(h.path("name").asText())) return h.path("value").asText();
+    return "";
+  }
+
+  MimeSupport.Body parts(
+      Credentials c,
+      String id,
+      JsonNode p,
+      List<Attachment> att,
+      boolean full,
+      int depth,
+      MimeSupport.ParseBudget budget) {
+    budget.part(depth);
+    String type = p.path("mimeType").asText().toLowerCase(Locale.ROOT);
+    String fileName = p.path("filename").asText();
+    if (!fileName.isBlank()
+        || header(p, "Content-Disposition")
+            .strip()
+            .toLowerCase(Locale.ROOT)
+            .matches("^attachment(?:\\s*;.*|\\s*)$")) {
+      if (att.size() >= 100) throw new ProviderException("MIME_LIMIT", false);
       att.add(
           new Attachment(
               p.path("body").hasNonNull("attachmentId")
                   ? p.path("body").path("attachmentId").asText()
                   : "inline:" + p.path("partId").asText(),
-              p.path("filename").asText(),
-              p.path("mimeType").asText(),
+              fileName.isBlank() ? "attachment" : fileName,
+              type,
               p.path("body").path("size").asLong()));
-    else if (full && p.path("mimeType").asText().startsWith("text/")) {
-      String data = p.path("body").path("data").asText();
-      if (data.length() > 3 * 1024 * 1024) throw new ProviderException("BODY_TOO_LARGE", false);
-      String s =
-          new String(Base64.getUrlDecoder().decode(data), java.nio.charset.StandardCharsets.UTF_8);
-      if (text.length() + s.length() > 2 * 1024 * 1024)
-        throw new ProviderException("BODY_TOO_LARGE", false);
-      text.append(p.path("mimeType").asText().equals("text/html") ? MimeSupport.safeText(s) : s)
-          .append('\n');
+      return MimeSupport.Body.EMPTY;
     }
-    for (JsonNode child : p.path("parts")) parts(child, text, att, full, depth + 1);
+    if (full && (type.equals("text/plain") || type.equals("text/html"))) {
+      JsonNode body = p.path("body");
+      if (body.path("size").asLong() > MimeSupport.MAX_BODY_BYTES)
+        throw new ProviderException("BODY_TOO_LARGE", false);
+      // Gmail may store a large text body in its attachments endpoint. This is still the
+      // message body; do not mistake it for a file or follow any HTML resource URLs.
+      if (body.path("data").asText().isEmpty() && body.hasNonNull("attachmentId"))
+        body =
+            call(
+                c,
+                "GET",
+                "/messages/"
+                    + HttpTransport.enc(id)
+                    + "/attachments/"
+                    + HttpTransport.enc(body.path("attachmentId").asText()),
+                null,
+                false);
+      String data = body.path("data").asText();
+      if (data.length() > 3 * 1024 * 1024) throw new ProviderException("BODY_TOO_LARGE", false);
+      try {
+        String contentType = header(p, "Content-Type");
+        String value =
+            MimeSupport.decodeText(
+                Base64.getUrlDecoder().decode(data),
+                contentType.isBlank() ? type : contentType,
+                budget);
+        return type.equals("text/html")
+            ? new MimeSupport.Body("", value)
+            : new MimeSupport.Body(value, "");
+      } catch (ProviderException e) {
+        throw e;
+      } catch (Exception e) {
+        throw new ProviderException("INVALID_MESSAGE", false);
+      }
+    }
+    List<MimeSupport.Body> bodies = new ArrayList<>();
+    int root = 0;
+    String start = null;
+    if (type.equals("multipart/related")) {
+      try {
+        String contentType = header(p, "Content-Type");
+        if (!contentType.isBlank())
+          start = new jakarta.mail.internet.ContentType(contentType).getParameter("start");
+      } catch (jakarta.mail.internet.ParseException ignored) {
+        // A missing or malformed start parameter falls back to the first related part.
+      }
+    }
+    for (JsonNode child : p.path("parts")) {
+      if (start != null && start.equals(header(child, "Content-ID"))) root = bodies.size();
+      bodies.add(parts(c, id, child, att, full, depth + 1, budget));
+    }
+    if (type.equals("multipart/related"))
+      return bodies.isEmpty() ? MimeSupport.Body.EMPTY : bodies.get(root);
+    return MimeSupport.combine(bodies, type.equals("multipart/alternative"));
   }
 
   public MutationResult mutate(Credentials c, String id, String action, Boolean value) {

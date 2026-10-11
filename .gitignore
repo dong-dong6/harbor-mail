@@ -19,3 +19,5 @@ test-results/
 **/__pycache__/
 **/.idea/
 *.iml
+
+client/tool/node_modules/

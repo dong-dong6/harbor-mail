@@ -1,0 +1,30 @@
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+const path=require('node:path');
+(async()=>{
+ const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH || '/usr/bin/chromium',headless:true,args:['--no-sandbox']});
+ const page=await browser.newPage({viewport:{width:1000,height:850}});
+ const requests=[];
+ await page.route('**/*',r=>{requests.push(r.request().url());r.abort();});
+ await page.setContent('<main></main>');
+ await page.addScriptTag({path:path.resolve(__dirname,'../web/mail_renderer.js')});
+ const attack=`<script>parent.hacked=true</script><img src="https://tracker.invalid/pixel" onerror="parent.hacked=true"><a href="javascript:alert(1)" ping="https://tracker.invalid/ping">bad</a><iframe src="https://tracker.invalid/frame"></iframe><meta http-equiv="refresh" content="0;url=https://tracker.invalid"><svg onload="alert(1)"><image href="https://tracker.invalid/svg"/></svg><style>@import 'https://tracker.invalid/css';</style><div style="background-image:url(https://tracker.invalid/bg);color:red;position:fixed">safe</div><form action="https://tracker.invalid"><input autofocus></form><img srcset="https://tracker.invalid/srcset 1x"><table bgcolor="#e8edf3" width="640" cellpadding="24" style="border-radius:24px"><tr><td><h1 style="font-size:36px">创意周刊</h1><p>这是合成邮件。排版与图片隐私测试。</p><a href="https://example.com/read?long=abcdef" style="color:#0b57d0">阅读详情</a></td><td style="background-color:#edf9df">第二栏<br><img src="cid:local" alt="内嵌图片"></td></tr></table>`;
+ const output=await page.evaluate(raw=>window.harborRenderMail(raw,false),attack);
+ assert(!output.includes('onerror')); assert(!output.includes('javascript:'));assert(!output.includes('srcset'));assert(!output.includes('background-image'));assert(!output.includes('position:'));assert(output.includes('border-radius:24px'));assert(output.includes('noopener noreferrer'));assert(!output.includes('<script'));
+ await page.evaluate(doc=>{const f=document.createElement('iframe');f.setAttribute('sandbox','allow-popups allow-popups-to-escape-sandbox');f.style='width:100%;height:780px;border:0';f.srcdoc=doc;document.querySelector('main').appendChild(f)},output);
+ await page.waitForTimeout(400);
+ assert.deepEqual(requests,[],'Default renderer must make zero external requests');
+ assert.equal(await page.evaluate(()=>window.hacked),undefined);
+ assert.equal(await page.evaluate(()=>document.querySelector('iframe').contentDocument),null,'Opaque sandbox required');
+ await page.screenshot({path:path.resolve(__dirname,'../../docs/screenshots/html-mail-desktop.png')});
+ await page.setViewportSize({width:390,height:844});
+ await page.screenshot({path:path.resolve(__dirname,'../../docs/screenshots/html-mail-mobile.png')});
+ const allowed=await page.evaluate(raw=>window.harborRenderMail(raw,true),'<img src="https://tracker.invalid/opt-in" alt="remote"><img src="data:image/svg+xml,x"><a href="data:text/html,x">data</a><a href="//tracker.invalid">relative</a>');
+ assert(allowed.includes('src="https://tracker.invalid/opt-in"'));assert(!allowed.includes('data:image'));assert(!allowed.includes('href="data:'));assert(!allowed.includes('href="//'));
+ await page.evaluate(doc=>document.querySelector('iframe').srcdoc=doc,allowed);
+ await page.waitForTimeout(300);assert(requests.some(x=>x.includes('/opt-in')));
+ // Every call starts blocked; opt-in is never persisted by the renderer.
+ assert(!await page.evaluate(()=>window.harborRenderMail('<img src="https://tracker.invalid/new">',false).includes('src="https://tracker.invalid/new"')));
+ console.log('PASS: layout, unsafe tags/attributes/URLs/CSS, opaque sandbox, zero default requests, explicit image opt-in, reset, desktop/mobile screenshots');
+ await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});

@@ -135,7 +135,7 @@ class ProviderHttpTest {
   }
 
   @Test
-  void htmlContentNeverReturnedAsExecutableHtml() {
+  void htmlIsPreservedAsUntrustedDataWithSafeTextFallback() {
     GmailAdapter g = new GmailAdapter(new ObjectMapper(), base);
     String data =
         Base64.getUrlEncoder()
@@ -149,9 +149,48 @@ class ProviderHttpTest {
             + data
             + "\"}}}");
     Mail m = g.body(gmail(), "m");
-    assertEquals("", m.bodyHtml());
+    assertEquals("<script>bad()</script><p>Hello</p><img src=https://tracker.test>", m.bodyHtml());
     assertTrue(m.bodyText().contains("Hello"));
     assertFalse(m.bodyText().contains("bad()"));
+  }
+
+  @Test
+  void gmailFetchesBodyStoredUnderAttachmentId() throws Exception {
+    String html = "<h1>Large HTML body</h1><img src='http://127.0.0.1:1/tracker'>";
+    route(
+        "/messages/m",
+        200,
+        "{\"id\":\"m\",\"payload\":{\"mimeType\":\"text/html\","
+            + "\"body\":{\"data\":\"\",\"attachmentId\":\"body-only\",\"size\":100}}}");
+    route(
+        "/messages/m/attachments/body-only",
+        200,
+        new ObjectMapper()
+            .writeValueAsString(
+                Map.of(
+                    "data",
+                    Base64.getUrlEncoder().encodeToString(html.getBytes(StandardCharsets.UTF_8)))));
+    Mail mail = new GmailAdapter(new ObjectMapper(), base).body(gmail(), "m");
+    assertEquals(html, mail.bodyHtml());
+    assertEquals("Large HTML body", mail.bodyText());
+    assertFalse(mail.hasAttachments());
+    assertTrue(request.get().contains("/attachments/body-only"));
+  }
+
+  @Test
+  void graphRequestsHtmlAndPreservesItAlongsideFallback() throws Exception {
+    String html = "<h2>Title</h2><p>First</p><p>Second</p>";
+    route(
+        "/messages/m",
+        200,
+        new ObjectMapper()
+            .writeValueAsString(
+                Map.of("id", "m", "body", Map.of("contentType", "HTML", "content", html))));
+    Mail mail = new GraphAdapter(new ObjectMapper(), base).body(gmail(), "m");
+    assertEquals(html, mail.bodyHtml());
+    assertTrue(mail.bodyText().contains("First\n"));
+    assertTrue(request.get().contains("outlook.body-content-type=\"html\""));
+    assertTrue(request.get().contains("ImmutableId"));
   }
 
   @Test
@@ -198,11 +237,10 @@ class ProviderHttpTest {
     var m = MimeSupport.compose(gmail(), o);
     assertEquals(3, m.getAllRecipients().length);
     assertEquals("<fixed@example.test>", m.getMessageID());
-    StringBuilder text = new StringBuilder();
     List<Attachment> a = new ArrayList<>();
-    MimeSupport.parse(m, text, a, "m", 0);
+    MimeSupport.Body body = MimeSupport.parse(m, a, "m");
     assertEquals(1, a.size());
     assertEquals("note.txt", a.get(0).fileName());
-    assertTrue(text.toString().contains("hello"));
+    assertTrue(body.fallbackText().contains("hello"));
   }
 }

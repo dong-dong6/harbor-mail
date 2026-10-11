@@ -122,6 +122,18 @@ public class JobWorker {
             var m = normalize(mid, account, remote, revision);
             if (rows.isEmpty()) mail.insertMessage(mid, account, remote.remoteId(), m);
             else {
+              var cached = Json.decode((String) rows.getFirst().get("data"));
+              // Sync is metadata-only. Keep a successfully fetched body (including its version)
+              // so periodic polls do not discard HTML or repeatedly refetch upgraded caches.
+              if (Boolean.TRUE.equals(cached.get("bodyFetched"))) {
+                for (String field :
+                    List.of(
+                        "bodyText", "bodyHtml", "bodyFetched", "bodyRenderVersion", "attachments"))
+                  if (cached.containsKey(field)) m.put(field, cached.get(field));
+                m.put(
+                    "hasAttachments",
+                    remote.hasAttachments() || Boolean.TRUE.equals(cached.get("hasAttachments")));
+              }
               store.db.update(
                   "UPDATE mail_message SET data=?,revision=?,received_at=?,folder=?,summary=? WHERE"
                       + " id=?",
@@ -177,9 +189,9 @@ public class JobWorker {
         "folder",
         m.folder(),
         "bodyText",
-        Objects.toString(m.bodyText(), ""),
+        MailService.bounded(m.bodyText(), 2_000_000),
         "bodyHtml",
-        "",
+        MailService.bounded(m.bodyHtml(), 2_000_000),
         "attachments",
         m.attachments() == null ? List.of() : m.attachments());
   }

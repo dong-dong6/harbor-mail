@@ -36,6 +36,12 @@ public class OAuthService {
   }
 
   Map<String, Object> start(String provider) {
+    return start(provider, "");
+  }
+
+  Map<String, Object> start(String provider, String completionId) {
+    if (!completionId.isEmpty() && !completionId.matches("[a-f0-9]{32}"))
+      throw ApiError.bad("Invalid completion identifier");
     if (security.demo)
       throw new ApiError(409, "DEMO_MODE", "Real mailbox authorization is disabled in demo mode");
     String state = security.token(), verifier = security.token() + security.token();
@@ -49,13 +55,13 @@ public class OAuthService {
         store.db.update("INSERT INTO oauth_state VALUES(?,?,?,?)", Security.hash(state), provider,
             System.currentTimeMillis() + 600_000,
             security.encrypt(Json.encode(Json.map("verifier", verifier, "owner", 1,
-                "configFingerprint", snapshot.fingerprint()))));
+                "configFingerprint", snapshot.fingerprint(), "completionId", completionId))));
         return Json.map("authorizationUrl", url);
       });
     } catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
   }
 
-  void callback(String provider, String state, String code, String error) {
+  String callback(String provider, String state, String code, String error) {
     if (security.demo) throw new ApiError(409, "DEMO_MODE", "OAuth disabled in demo");
     OAuthSettings.provider(provider);
     if (state.length() > 200 || state.isBlank()) throw ApiError.bad("Invalid authorization state");
@@ -97,6 +103,7 @@ public class OAuthService {
       store.changed("ACCOUNT", id, 1);
       return null;
     });
+    return Json.string(stateData, "completionId");
   }
 
   private void ensureUnchanged(OAuthSettings.Snapshot snapshot) {

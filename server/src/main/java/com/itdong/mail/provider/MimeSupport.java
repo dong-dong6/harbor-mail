@@ -61,8 +61,114 @@ final class MimeSupport {
     return Base64.getUrlEncoder().withoutPadding().encodeToString(out.toByteArray());
   }
 
+  static final int MAX_BODY_CHARS = 2_000_000;
+  static final int MAX_BODY_BYTES = 2 * 1024 * 1024;
+
+  // Provider HTML is untrusted data. Only the client's isolated, sanitized reader may render it.
+  // Jsoup parses locally; it never resolves image URLs or other resources.
   static String safeText(String html) {
-    return org.jsoup.Jsoup.parse(html == null ? "" : html).text();
+    var document = org.jsoup.Jsoup.parse(html == null ? "" : html);
+    document.select("script,style,head,template").remove();
+    document.select("br").forEach(br -> br.replaceWith(new org.jsoup.nodes.TextNode("\n")));
+    document
+        .select("p,div,section,article,header,footer,h1,h2,h3,h4,h5,h6,ul,ol,li,tr,blockquote")
+        .before("\n")
+        .after("\n");
+    document.select("td,th").after("\t");
+    String text =
+        document
+            .body()
+            .wholeText()
+            .replace('\u00a0', ' ')
+            .replaceAll("[ \t]+\n", "\n")
+            .replaceAll("\n[ \t]+", "\n")
+            .replaceAll("\n{3,}", "\n\n")
+            .strip();
+    return checked(text);
+  }
+
+  static String checked(String value) {
+    String s = value == null ? "" : value;
+    if (s.length() > MAX_BODY_CHARS) throw new ProviderException("BODY_TOO_LARGE", false);
+    return s;
+  }
+
+  record Body(String text, String html) {
+    static final Body EMPTY = new Body("", "");
+
+    Body {
+      text = checked(text);
+      html = checked(html);
+    }
+
+    String fallbackText() {
+      return text.isBlank() && !html.isBlank() ? safeText(html) : text;
+    }
+  }
+
+  static final class ParseBudget {
+    int parts;
+    long bytes;
+
+    void part(int depth) {
+      if (depth > 20 || ++parts > 1000) throw new ProviderException("MIME_LIMIT", false);
+    }
+
+    void bytes(int count) {
+      bytes += count;
+      if (bytes > MAX_BODY_BYTES) throw new ProviderException("BODY_TOO_LARGE", false);
+    }
+  }
+
+  static Body combine(List<Body> bodies, boolean alternative) {
+    if (alternative) {
+      // Each alternative is the same content, not another paragraph. Keep the last supported
+      // representation of each type and derive a fallback only after this selection.
+      String text = "", html = "";
+      for (Body body : bodies) {
+        if (!body.text().isBlank()) text = body.text();
+        if (!body.html().isBlank()) html = body.html();
+      }
+      return new Body(text, html);
+    }
+    List<Body> content =
+        bodies.stream().filter(b -> !b.text().isBlank() || !b.html().isBlank()).toList();
+    if (content.isEmpty()) return Body.EMPTY;
+    if (content.size() == 1) return content.getFirst();
+    StringBuilder text = new StringBuilder(), html = new StringBuilder();
+    boolean hasHtml = content.stream().anyMatch(b -> !b.html().isBlank());
+    for (Body body : content) {
+      if (!text.isEmpty()) text.append("\n\n");
+      text.append(body.fallbackText());
+      if (hasHtml) {
+        html.append("<section>");
+        html.append(
+            body.html().isBlank()
+                ? "<pre>" + org.jsoup.nodes.Entities.escape(body.text()) + "</pre>"
+                : body.html());
+        html.append("</section>");
+      }
+      if (text.length() > MAX_BODY_CHARS || html.length() > MAX_BODY_CHARS)
+        throw new ProviderException("BODY_TOO_LARGE", false);
+    }
+    return new Body(text.toString(), html.toString());
+  }
+
+  static String decodeText(byte[] bytes, String contentType, ParseBudget budget) throws Exception {
+    budget.bytes(bytes.length);
+    String charset = new ContentType(contentType).getParameter("charset");
+    try {
+      return checked(
+          new String(
+              bytes,
+              charset == null
+                  ? java.nio.charset.StandardCharsets.UTF_8
+                  : java.nio.charset.Charset.forName(charset)));
+    } catch (java.nio.charset.UnsupportedCharsetException
+        | java.nio.charset.IllegalCharsetNameException e) {
+      // Broken charset declarations should not make otherwise readable messages inaccessible.
+      return checked(new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
+    }
   }
 
   static List<Address> addresses(jakarta.mail.Address[] in) {
@@ -76,38 +182,49 @@ final class MimeSupport {
         .toList();
   }
 
-  static void parse(
-      Part p, StringBuilder text, List<Attachment> attachments, String prefix, int depth)
+  static Body parse(Part part, List<Attachment> attachments, String prefix) throws Exception {
+    return parse(part, attachments, prefix, 0, new ParseBudget());
+  }
+
+  private static Body parse(
+      Part p, List<Attachment> attachments, String prefix, int depth, ParseBudget budget)
       throws Exception {
-    if (depth > 20 || attachments.size() > 100) throw new ProviderException("MIME_LIMIT", false);
+    budget.part(depth);
     if (Part.ATTACHMENT.equalsIgnoreCase(p.getDisposition()) || p.getFileName() != null) {
+      if (attachments.size() >= 100) throw new ProviderException("MIME_LIMIT", false);
       attachments.add(
           new Attachment(
               prefix,
               p.getFileName() == null ? "attachment" : p.getFileName(),
               p.getContentType(),
               Math.max(0, p.getSize())));
-      return;
+      return Body.EMPTY;
     }
     if (p.isMimeType("text/plain") || p.isMimeType("text/html")) {
       try (InputStream in = p.getInputStream()) {
-        byte[] b = in.readNBytes(2 * 1024 * 1024 + 1);
-        if (b.length > 2 * 1024 * 1024) throw new ProviderException("BODY_TOO_LARGE", false);
-        String charset = new ContentType(p.getContentType()).getParameter("charset");
-        String s =
-            new String(
-                b,
-                charset == null
-                    ? java.nio.charset.StandardCharsets.UTF_8
-                    : java.nio.charset.Charset.forName(charset));
-        if (text.length() + s.length() > 2 * 1024 * 1024)
-          throw new ProviderException("BODY_TOO_LARGE", false);
-        text.append(p.isMimeType("text/html") ? safeText(s) : s).append('\n');
+        byte[] bytes = in.readNBytes(MAX_BODY_BYTES + 1);
+        String value = decodeText(bytes, p.getContentType(), budget);
+        return p.isMimeType("text/html") ? new Body("", value) : new Body(value, "");
       }
-    } else if (p.isMimeType("multipart/*")) {
-      Multipart mp = (Multipart) p.getContent();
-      for (int i = 0; i < mp.getCount(); i++)
-        parse(mp.getBodyPart(i), text, attachments, prefix + "." + i, depth + 1);
     }
+    if (p.isMimeType("multipart/*")) {
+      Multipart mp = (Multipart) p.getContent();
+      List<Body> bodies = new ArrayList<>();
+      int root = 0;
+      String start = new ContentType(p.getContentType()).getParameter("start");
+      for (int i = 0; i < mp.getCount(); i++) {
+        Part child = mp.getBodyPart(i);
+        if (start != null
+            && Arrays.asList(
+                    Objects.requireNonNullElse(child.getHeader("Content-ID"), new String[0]))
+                .contains(start)) root = i;
+        bodies.add(parse(child, attachments, prefix + "." + i, depth + 1, budget));
+      }
+      // Related resources are not extra message bodies. Never download external resource URLs.
+      if (p.isMimeType("multipart/related"))
+        return bodies.isEmpty() ? Body.EMPTY : bodies.get(root);
+      return combine(bodies, p.isMimeType("multipart/alternative"));
+    }
+    return Body.EMPTY;
   }
 }

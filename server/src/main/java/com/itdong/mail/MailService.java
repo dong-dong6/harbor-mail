@@ -5,6 +5,7 @@ import jakarta.annotation.PostConstruct;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -15,12 +16,18 @@ public class MailService {
   final ProviderGateway providers;
   final OAuthService oauth;
   public static final long MAX_ATTACHMENT = 10 * 1024 * 1024;
+  static final int BODY_RENDER_VERSION = 2;
 
+  @Autowired
   MailService(Store store, Security security, OAuthService oauth) {
+    this(store, security, oauth, new DefaultProviderGateway(Json.MAPPER));
+  }
+
+  MailService(Store store, Security security, OAuthService oauth, ProviderGateway providers) {
     this.store = store;
     this.security = security;
     this.oauth = oauth;
-    this.providers = new DefaultProviderGateway(Json.MAPPER);
+    this.providers = providers;
   }
 
   @PostConstruct
@@ -359,6 +366,7 @@ public class MailService {
             "folder",
             "previousFolder",
             "bodyFetched",
+            "bodyRenderVersion",
             "bcc",
             "replyToMessageId",
             "messageId",
@@ -373,7 +381,10 @@ public class MailService {
 
   Map<String, Object> detail(String id) {
     var m = store.data("mail_message", id);
-    if (!security.demo && !Boolean.TRUE.equals(m.get("bodyFetched"))) {
+    if (!security.demo
+        && (!Boolean.TRUE.equals(m.get("bodyFetched"))
+            || !(m.get("bodyRenderVersion") instanceof Number version)
+            || version.intValue() < BODY_RENDER_VERSION)) {
       var row = store.one("SELECT * FROM mail_message WHERE id=?", id);
       var remote =
           providers.body(credentials(Json.string(m, "accountId")), (String) row.get("remote_id"));
@@ -381,8 +392,11 @@ public class MailService {
           () -> {
             var latest = store.data("mail_message", id);
             latest.put("bodyText", bounded(remote.bodyText(), 2_000_000));
-            latest.put("bodyHtml", "");
+            // Raw provider HTML is untrusted, not a safe-to-inject document. The client must
+            // sanitize it and render only in its isolated reader. Never fetch HTML resources.
+            latest.put("bodyHtml", bounded(remote.bodyHtml(), 2_000_000));
             latest.put("bodyFetched", true);
+            latest.put("bodyRenderVersion", BODY_RENDER_VERSION);
             var metadata = new ArrayList<Map<String, Object>>();
             for (var a :
                 remote.attachments() == null

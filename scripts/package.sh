@@ -20,7 +20,7 @@ try:
         ['git','status','--porcelain','--untracked-files=no'],cwd=r,text=True).strip())
 except (subprocess.CalledProcessError, FileNotFoundError):
     build_info['packagedSourceCommit']='unavailable-source-archive'
-skip={'tools','.git','.dart_tool','build','target','data','test-results','Pods','.symlinks','ephemeral','.idea','__pycache__'}
+skip={'node_modules','tools','.git','.dart_tool','build','target','data','test-results','Pods','.symlinks','ephemeral','.idea','__pycache__'}
 with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
     for p in sorted(r.rglob('*')):
         if not p.is_file() or p.is_symlink(): continue

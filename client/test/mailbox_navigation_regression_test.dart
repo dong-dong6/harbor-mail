@@ -156,9 +156,7 @@ Finder get _search => find.byWidgetPredicate(
     );
 
 Future<void> _chooseBeta(WidgetTester tester) async {
-  await tester.tap(find.byTooltip('切换邮箱账户'));
-  await tester.pumpAndSettle();
-  await tester.tap(find.text('Beta 测试邮箱').last);
+  await tester.tap(find.byKey(const ValueKey('account-beta')));
   await tester.pumpAndSettle();
 }
 
@@ -227,11 +225,7 @@ void main() {
     await tester.pump();
     // A pending detail has an indeterminate progress indicator. Pump bounded
     // animation frames rather than waiting for it to settle before navigation.
-    await tester.tap(find.byTooltip('切换邮箱账户'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
-    await tester.pump();
-    await tester.tap(find.text('Beta 测试邮箱').last);
+    await tester.tap(find.byKey(const ValueKey('account-beta')));
     await tester.pumpAndSettle();
     expect(_row(2), findsOneWidget);
     detail.complete(_json(_message(0)));

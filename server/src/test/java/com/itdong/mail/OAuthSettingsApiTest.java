@@ -573,6 +573,30 @@ class OAuthSettingsApiTest {
     }
   }
 
+  @Test
+  void callbackReturnsOnlyBoundCompletionMarkerAfterPersistence() throws Exception {
+    String marker = "0123456789abcdef0123456789abcdef";
+    try (var fixture = new ProviderFixture(null)) {
+      var started = fixture.service.start("GMAIL", marker);
+      String url = (String) started.get("authorizationUrl");
+      assertFalse(url.contains(marker));
+      String state = query(URI.create(url)).get("state");
+      assertEquals(marker, fixture.service.callback("GMAIL", state, "synthetic-code", ""));
+      assertEquals(1, store.db.queryForObject("SELECT COUNT(*) FROM mail_account", Integer.class));
+      assertThrows(ApiError.class, () -> fixture.service.callback("GMAIL", state, "synthetic-code", ""));
+      assertEquals("", fixture.service.callback("GMAIL", fixture.start(), "synthetic-code", ""));
+      assertEquals(1, store.db.queryForObject("SELECT COUNT(*) FROM mail_account", Integer.class));
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"//evil.example", "https://evil.example", "<script>", "abc", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"})
+  void invalidCompletionMarkerCannotStartAuthorization(String marker) throws Exception {
+    assertError(call("POST", "/oauth/GMAIL/start", Json.map("completionId", marker), token),
+        400, "INVALID_REQUEST");
+    assertEquals(0, store.db.queryForObject("SELECT COUNT(*) FROM oauth_state", Integer.class));
+  }
+
   @ParameterizedTest
   @ValueSource(strings = {"/token", "/profile"})
   void settingsChangeDuringCallbackNeverStoresTokensFromTheOldApplication(String blockedPath) throws Exception {

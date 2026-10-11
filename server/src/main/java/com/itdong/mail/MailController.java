@@ -182,7 +182,7 @@ public class MailController {
             "oauthSettings",
             true,
             "html",
-            false,
+            true,
             "offlineCache",
             false,
             "remoteAttachmentDownload",
@@ -210,17 +210,22 @@ public class MailController {
   }
 
   @PostMapping("/oauth/{provider}/start")
-  Object oauthStart(@PathVariable String provider) {
-    return oauth.start(provider);
+  Object oauthStart(@PathVariable String provider,
+      @RequestBody(required = false) Map<String, Object> body) {
+    return oauth.start(provider, body == null ? "" : Json.string(body, "completionId"));
   }
 
-  @GetMapping(value = "/oauth/{provider}/callback", produces = MediaType.TEXT_PLAIN_VALUE)
-  String callback(
+  @GetMapping("/oauth/{provider}/callback")
+  ResponseEntity<Void> callback(
       @PathVariable String provider,
       @RequestParam(defaultValue = "") String state,
       @RequestParam(defaultValue = "") String code,
       @RequestParam(defaultValue = "") String error) {
-    oauth.callback(provider, state, code, error);
-    return "Mailbox connected. You may close this window and refresh the account list.";
+    String completionId = oauth.callback(provider, state, code, error);
+    // Fixed same-origin destination. Never carry provider code, state or credentials forward.
+    String fragment = completionId.matches("[a-f0-9]{32}") ? completionId : "connected";
+    return ResponseEntity.status(HttpStatus.SEE_OTHER)
+        .header(HttpHeaders.LOCATION, "/oauth-complete.html#" + fragment)
+        .build();
   }
 }

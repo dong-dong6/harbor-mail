@@ -23,7 +23,7 @@ final class GraphAdapter implements ProviderGateway {
         c.accessToken(),
         body,
         send,
-        Map.of("Prefer", "IdType=\"ImmutableId\", outlook.body-content-type=\"text\""));
+        Map.of("Prefer", "IdType=\"ImmutableId\", outlook.body-content-type=\"html\""));
   }
 
   static String folderId(String role) {
@@ -120,7 +120,7 @@ final class GraphAdapter implements ProviderGateway {
         m.isStarred(),
         m.hasAttachments(),
         m.bodyText(),
-        "",
+        m.bodyHtml(),
         attachments);
   }
 
@@ -135,9 +135,10 @@ final class GraphAdapter implements ProviderGateway {
 
   Mail parse(JsonNode n, String folder) {
     JsonNode from = n.path("from").path("emailAddress");
-    String content = n.path("body").path("content").asText();
-    if (n.path("body").path("contentType").asText().equalsIgnoreCase("html"))
-      content = MimeSupport.safeText(content);
+    String content = MimeSupport.checked(n.path("body").path("content").asText());
+    if (content.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+        > MimeSupport.MAX_BODY_BYTES) throw new ProviderException("BODY_TOO_LARGE", false);
+    boolean html = n.path("body").path("contentType").asText().equalsIgnoreCase("html");
     Instant date;
     try {
       date = Instant.parse(n.path("receivedDateTime").asText());
@@ -157,8 +158,8 @@ final class GraphAdapter implements ProviderGateway {
         n.path("isRead").asBoolean(),
         n.path("flag").path("flagStatus").asText().equals("flagged"),
         n.path("hasAttachments").asBoolean(),
-        content,
-        "",
+        html ? MimeSupport.safeText(content) : content,
+        html ? content : "",
         List.of());
   }
 

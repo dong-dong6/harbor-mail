@@ -18,6 +18,7 @@ public interface ProviderGateway {
 
   record Attachment(String id, String fileName, String contentType, long size) {}
 
+  /** bodyHtml is bounded, untrusted provider data; consumers must sanitize before rendering. */
   record Mail(
       String remoteId,
       String folder,

@@ -1,0 +1,14 @@
+{
+  "name": "harbor-mail-browser-tests",
+  "private": true,
+  "version": "0.2.2",
+  "description": "Development-only synthetic OAuth and isolated mail renderer checks",
+  "scripts": {
+    "test": "node oauth_bridge_test.cjs && node test_mail_sanitizer.cjs",
+    "test:browser": "node oauth_browser_smoke.cjs && node test_mail_renderer.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "30.1.2",
+    "playwright": "1.62.1"
+  }
+}

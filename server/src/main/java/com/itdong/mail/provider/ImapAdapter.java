@@ -182,9 +182,8 @@ final class ImapAdapter implements ProviderGateway {
 
   Mail parse(Message m, String id, String folder, boolean full) throws Exception {
     List<Address> from = MimeSupport.addresses(m.getFrom());
-    StringBuilder text = new StringBuilder();
     List<Attachment> att = new ArrayList<>();
-    if (full) MimeSupport.parse(m, text, att, id, 0);
+    MimeSupport.Body body = full ? MimeSupport.parse(m, att, id) : MimeSupport.Body.EMPTY;
     Date date = m.getReceivedDate();
     if (date == null) date = m.getSentDate();
     return new Mail(
@@ -200,8 +199,8 @@ final class ImapAdapter implements ProviderGateway {
         m.isSet(Flags.Flag.SEEN),
         m.isSet(Flags.Flag.FLAGGED),
         !att.isEmpty(),
-        text.toString(),
-        "",
+        body.fallbackText(),
+        body.html(),
         att);
   }
 
