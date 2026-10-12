@@ -12,11 +12,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import javax.crypto.Cipher;
 import javax.crypto.spec.*;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 @Component
+@Order(Ordered.HIGHEST_PRECEDENCE + 10)
 public class Security extends OncePerRequestFilter {
   final Store store;
   final boolean demo;
@@ -159,6 +162,41 @@ public class Security extends OncePerRequestFilter {
         demo);
   }
 
+  /**
+   * Use exactly one path interpretation for authorization and handler dispatch. All current API
+   * identifiers and bundled assets use ASCII unreserved segments. Query values (including OAuth
+   * codes and searches) are outside this check. Reject alternate spellings rather than duplicating
+   * Tomcat/Spring decoding, matrix-parameter removal or dot-segment normalization.
+   */
+  static String canonicalRequestPath(HttpServletRequest request) {
+    String raw = request.getRequestURI();
+    if (raw == null || raw.isEmpty() || raw.charAt(0) != '/') return null;
+    int segmentStart = 1;
+    for (int i = 1; i <= raw.length(); i++) {
+      if (i == raw.length() || raw.charAt(i) == '/') {
+        String segment = raw.substring(segmentStart, i);
+        if ((segment.isEmpty() && raw.length() != 1)
+            || segment.equals(".") || segment.equals("..")) return null;
+        segmentStart = i + 1;
+      } else {
+        char c = raw.charAt(i);
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+            || (c >= '0' && c <= '9') || c == '_' || c == '~' || c == '-' || c == '.'))
+          return null;
+      }
+    }
+    String context = Objects.toString(request.getContextPath(), "");
+    String servletPath = Objects.toString(request.getServletPath(), "");
+    String pathInfo = request.getPathInfo();
+    String routed = servletPath + Objects.toString(pathInfo, "");
+    // Container routing is already resolved here. Fail closed on any disagreement with the raw
+    // request target, including disagreement introduced by a future container policy change.
+    if (!raw.equals(context + routed)) return null;
+    // Prefix-mapped dispatchers match handlers against pathInfo; the default root dispatcher uses
+    // servletPath. Never let a servlet mapping prefix hide an API path from authorization.
+    return pathInfo == null ? servletPath : pathInfo;
+  }
+
   @Override
   protected void doFilterInternal(
       HttpServletRequest req, HttpServletResponse res, FilterChain chain)
@@ -171,7 +209,16 @@ public class Security extends OncePerRequestFilter {
     res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Referrer-Policy", "no-referrer");
-    if (req.getRequestURI().startsWith("/api/"))
+    String path = canonicalRequestPath(req);
+    if (path == null) {
+      res.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+      res.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+      res.setContentType("application/json");
+      res.getWriter().write(Json.encode(Json.map("error", Json.map(
+          "code", "INVALID_PATH", "message", "Use the canonical request path", "requestId", requestId))));
+      return;
+    }
+    if (path.startsWith("/api/"))
       res.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
     else
       res.setHeader(
@@ -187,10 +234,9 @@ public class Security extends OncePerRequestFilter {
       res.setStatus(origin.equals(reqOrigin) ? 204 : 403);
       return;
     }
-    String path = req.getRequestURI();
     boolean publicPath =
-        path.equals("/api/v1/health")
-            || path.equals("/api/v1/auth/login")
+        (path.equals("/api/v1/health") && Set.of("GET", "HEAD").contains(req.getMethod()))
+            || (path.equals("/api/v1/auth/login") && req.getMethod().equals("POST"))
             || (path.matches("/api/v1/oauth/(GMAIL|OUTLOOK|EXCHANGE)/callback")
                 && req.getMethod().equals("GET"));
     if (path.startsWith("/api/") && !publicPath) {
