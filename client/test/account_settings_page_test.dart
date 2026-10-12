@@ -17,10 +17,10 @@ const account = <String, dynamic>{
   'canDisconnect': true,
 };
 http.Response json(Object value, [int status = 200]) => http.Response(
-  jsonEncode(value),
-  status,
-  headers: {'content-type': 'application/json; charset=utf-8'},
-);
+      jsonEncode(value),
+      status,
+      headers: {'content-type': 'application/json; charset=utf-8'},
+    );
 Future<void> mount(
   WidgetTester tester,
   MailApi api, {
@@ -57,8 +57,9 @@ void main() {
       final api = MailApi(
         client: MockClient((request) async {
           requests.add(request);
-          if (request.method == 'PATCH')
+          if (request.method == 'PATCH') {
             return json({...account, 'displayName': 'Work mailbox'});
+          }
           return json({
             'items': [account],
           });
@@ -218,7 +219,7 @@ void main() {
       );
       final leave = key.currentState!.canLeave();
       await tester.pumpAndSettle();
-      await tester.tap(find.text('取消'));
+      await tester.tap(find.text('取消').last);
       await tester.pumpAndSettle();
       expect(await leave, isFalse);
       expect(find.text('Unsaved name'), findsOneWidget);

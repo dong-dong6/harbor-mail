@@ -12,7 +12,8 @@ const server=createServer((req,res)=>{
   let body={items:[]};
   if(p.endsWith('/auth/login'))body={accessToken:'synthetic-token'};
   if(p.endsWith('/accounts'))body={items:accounts};
-  if(p.endsWith('/settings/capabilities'))body={demoMode:true,providers:[],features:{html:true}};
+  if(p.endsWith('/settings/capabilities'))body={demoMode:true,providers:[],features:{html:true,oauthSettings:true}};
+  if(p.endsWith('/settings/oauth'))body={demoMode:true,readOnly:true,items:['GMAIL','OUTLOOK','EXCHANGE'].map(provider=>({provider,source:'ENVIRONMENT',revision:0,clientId:'synthetic-id',redirectUri:'https://mail.invalid/callback',tenant:provider==='GMAIL'?'':'consumers',hasClientSecret:false,configured:false,validationErrors:[]}))};
   if(p.endsWith('/messages'))body={items:[mail('m1'),mail('m2')],hasMore:false};
   if(/\/messages\/m[12]$/.test(p))body=mail(p.split('/').pop());
   if(p.endsWith('/messages/missing')){res.statusCode=404;body={code:'NOT_FOUND',message:'邮件不存在或没有访问权限'};}
@@ -34,6 +35,8 @@ const server=createServer((req,res)=>{
    const login=async()=>{const placeholder=page.locator('flt-semantics-placeholder');if(await placeholder.count())await placeholder.evaluate(e=>e.click());await page.getByRole('textbox').first().fill('owner');await page.getByRole('textbox').nth(1).fill('synthetic-only');await page.getByRole('button',{name:'登录',exact:true}).click();};
    const back=()=>page.evaluate(()=>history.back()),forward=()=>page.evaluate(()=>history.forward());
    const reveal=async locator=>{for(let n=0;n<12;n++){const box=await locator.boundingBox().catch(()=>null);if(box&&box.y>=0&&box.y+Math.min(box.height,80)<1050)return;await page.mouse.move(width-14,850);await page.mouse.wheel(0,box&&box.y<0?-450:450);await page.waitForTimeout(120);}};
+   try {
+   console.log(`CHECK ${width}: copied link and header`);
    await page.goto(base+'/#/mail/m2');await login();await hash('/mail/m2');
    await page.getByText('ROUTE SUBJECT TWO',{exact:true}).waitFor();
    await page.getByText('发件人：Synthetic sender <sender@example.invalid>',{exact:true}).waitFor();
@@ -49,23 +52,34 @@ const server=createServer((req,res)=>{
    await page.getByRole('button',{name:'返回列表',exact:true}).click();await hash('/mail');
    await page.getByText('ROUTE SUBJECT ONE',{exact:true}).click();await hash('/mail/m1');
    await back();await hash('/mail');await forward();await hash('/mail/m1');
+   console.log(`CHECK ${width}: browser history and inline editor`);
    const reply=page.getByRole('button',{name:'回复',exact:true});await reveal(reply);await reply.click();
    const body=page.getByRole('textbox',{name:'回复正文',exact:true});await reveal(body);await body.fill('KEEP REPLY THROUGH BROWSER BACK');
    assert.equal(await page.getByRole('dialog').count(),0,'reply is inline rather than modal');
+   if(width===1440){
+    const warned=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Missing dirty beforeunload warning')),10000);page.once('dialog',async d=>{try{assert.equal(d.type(),'beforeunload');await d.dismiss();clearTimeout(timer);resolve();}catch(e){clearTimeout(timer);reject(e);}});});
+    await Promise.all([warned,page.reload({waitUntil:'domcontentloaded'}).catch(()=>{})]);
+    assert.equal(await body.inputValue(),'KEEP REPLY THROUGH BROWSER BACK','cancelled document reload preserves inline reply');
+   }
    assert.equal(await iframe.evaluate(e=>e.style.pointerEvents),'auto','iframe is interactive outside dialogs');
    await reveal(page.getByRole('button',{name:'显示原邮件',exact:true}));await page.getByRole('button',{name:'显示原邮件',exact:true}).click();await page.getByRole('button',{name:'收起原邮件',exact:true}).click();
    await back();await page.getByText('放弃未保存的更改？',{exact:true}).waitFor();await hash('/mail/m1');assert.equal(await iframe.evaluate(e=>e.style.pointerEvents),'none','dialog shields native HTML iframe');
    await page.getByRole('button',{name:'继续编辑',exact:true}).click();assert.equal(await body.inputValue(),'KEEP REPLY THROUGH BROWSER BACK');
    await back();await page.getByRole('button',{name:'放弃更改',exact:true}).click();await hash('/mail');await forward();await hash('/mail/m1');
+   console.log(`CHECK ${width}: refresh and resume`);
    await page.reload();await login();await hash('/mail/m1');await page.getByText('ROUTE SUBJECT ONE',{exact:true}).waitFor();
    assert.deepEqual(await page.evaluate(()=>Object.keys(localStorage).filter(k=>/token|auth|password/i.test(k))),[]);
    if(width===1440){
     await page.getByRole('button',{name:'账户与设置',exact:true}).last().click();await hash('/settings/accounts');
     await page.getByRole('button',{name:'添加邮箱',exact:true}).click();await hash('/settings/add');
+    await back();await hash('/settings/accounts');
+    await page.getByRole('button',{name:'系统 OAuth 设置',exact:true}).click();await hash('/settings/oauth');
+    await page.getByText('演示环境 · 仅可查看配置状态。所有输入和保存均已禁用，请勿输入真实密钥。',{exact:true}).waitFor();
     await back();await hash('/settings/accounts');await back();await hash('/mail/m1');
    }
    await page.evaluate(()=>{location.hash='/mail/missing';});await page.getByText('加载失败，重试',{exact:true}).waitFor();await hash('/mail/missing');
-   assert.equal(errors.length,0,errors.join('\n'));await page.close();
+   assert.equal(errors.length,0,errors.join('\n'));
+   } catch(e) { console.error('Route failure URL:',page.url());await page.screenshot({path:path.join(out,`failure-${width}.png`)}).catch(()=>{});throw e; } finally { await page.close(); }
   }
   console.log('PASS built Flutter routing/header/inline at desktop and mobile: deep link login, browser Back/Forward, dirty keep/discard, refresh resume, settings/add, unavailable mail, sandbox and native editable reply');
  }finally{await browser.close();server.close();}

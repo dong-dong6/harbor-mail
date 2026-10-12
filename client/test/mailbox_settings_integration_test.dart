@@ -35,18 +35,20 @@ class Fixture {
     base: 'https://mail.invalid/api/v1',
     client: MockClient((r) async {
       final path = r.url.path;
-      if (path.endsWith('/auth/login'))
+      if (path.endsWith('/auth/login')) {
         return json({'accessToken': 'synthetic'});
+      }
       if (r.method == 'DELETE') {
         accounts.removeWhere((a) => path.endsWith('/${a['id']}'));
         return http.Response('', 204);
       }
       if (path.endsWith('/accounts')) return json({'items': accounts});
-      if (path.endsWith('/settings/capabilities'))
+      if (path.endsWith('/settings/capabilities')) {
         return json({
           'providers': [],
           'limits': {'maxAttachmentBytes': 10485760},
         });
+      }
       if (path.endsWith('/folders')) return json({'items': []});
       if (path.endsWith('/messages')) {
         lists.add(r.url);
@@ -55,8 +57,9 @@ class Fixture {
           'hasMore': false,
         });
       }
-      if (path.contains('/messages/'))
+      if (path.contains('/messages/')) {
         return json(message(path.split('/').last));
+      }
       throw StateError('Unexpected synthetic request ${r.method} $path');
     }),
   );

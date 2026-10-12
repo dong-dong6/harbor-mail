@@ -29,7 +29,27 @@
     }
     return result.join(';');
   }
-  function render(raw, allowImages) {
+  function render(raw, allowImages, verifiedImages) {
+    // Only the trusted host supplies these raster data URLs, after bearer-authenticated
+    // proxy requests. A boolean opt-in alone can never enable origin requests.
+    let images = Object.create(null);
+    try {
+      const value = typeof verifiedImages === 'string' ? JSON.parse(verifiedImages) : verifiedImages;
+      if (value && typeof value === 'object' && !Array.isArray(value)) images = value;
+    } catch (_) { /* fail closed */ }
+    let imagePlacements = 0, imageDataCharacters = 0;
+    function verifiedRaster(source) {
+      if (!Object.prototype.hasOwnProperty.call(images, source)) return null;
+      const value = images[source];
+      if (typeof value !== 'string' || value.length > 5592430 || imagePlacements >= 32 ||
+          imageDataCharacters + value.length > 22370336 ||
+          !/^data:image\/png;base64,iVBORw0KGgo[A-Za-z0-9+/]*={0,2}$/.test(value)) return null;
+      // Repeated references must spend the budget too: one 4 MiB response must
+      // never turn thousands of duplicate <img> tags into gigabytes of srcdoc.
+      imagePlacements++;
+      imageDataCharacters += value.length;
+      return value;
+    }
     const source = document.createElement('template');
     source.innerHTML = String(raw).slice(0, 2097152);
     const inert = source.content.ownerDocument;
@@ -61,11 +81,10 @@
         if (href) { el.href = href; el.target = '_blank'; el.rel = 'noopener noreferrer'; el.title = href; }
       }
       if (tag === 'img') {
-        const src = safeUrl(node.getAttribute('src'));
-        // Remote images only after this mail's explicit opt-in. CID/data/SVG
-        // are deliberately placeholders; never inject an authenticated API URL.
-        if (allowImages && src && /^https?:/.test(src)) {
-          el.setAttribute('referrerpolicy', 'no-referrer'); el.setAttribute('loading', 'lazy'); el.setAttribute('src', src);
+        const source = (node.getAttribute('src') || '').trim();
+        const src = allowImages ? verifiedRaster(source) : null;
+        if (src) {
+          el.setAttribute('referrerpolicy', 'no-referrer'); el.setAttribute('src', src);
         } else {
           const placeholder = inert.createElement('span');
           placeholder.textContent = '[' + (node.getAttribute('alt') || '图片已阻止') + ']';
@@ -77,7 +96,7 @@
       parent.appendChild(el);
     }
     for (const child of source.content.childNodes) copy(child, output, 0);
-    const csp = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src " + (allowImages ? 'https: http:' : "'none'") + "; font-src 'none'; connect-src 'none'; media-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
+    const csp = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src " + (allowImages ? 'data:' : "'none'") + "; font-src 'none'; connect-src 'none'; media-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
     return '<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="' + csp + '"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;padding:0;background:#fff;color:#202124;font:15px/1.6 Arial,sans-serif}body{padding:8px;overflow-wrap:anywhere}*{box-sizing:border-box}img{max-width:100%;height:auto}table{max-width:100%}pre{white-space:pre-wrap}a{color:#0b57d0}#mail-content{overflow-x:auto;max-width:100%}</style></head><body><div id="mail-content">' + output.innerHTML + '</div></body></html>';
   }
   window.harborRenderMail = render;

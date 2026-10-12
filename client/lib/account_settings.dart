@@ -42,6 +42,13 @@ class AccountSettingsPageState extends State<AccountSettingsPage> {
   String originalName = '', error = '', notice = '';
   bool loading = false, busy = false, confirming = false;
   int generation = 0;
+  bool get protectsDocumentExit =>
+      locked ||
+      dirty ||
+      (section == 'add' &&
+          (addKey.currentState?.protectsDocumentExit ?? false)) ||
+      (section == 'oauth' &&
+          (oauthKey.currentState?.protectsDocumentExit ?? false));
   bool get dirty => editingId != null && name.text.trim() != originalName;
   bool get locked => busy || confirming;
   @override
@@ -176,9 +183,8 @@ class AccountSettingsPageState extends State<AccountSettingsPage> {
       );
       if (!mounted) return;
       setState(() {
-        accounts = accounts
-            .map((a) => a['id'] == id ? {...a, ...saved} : a)
-            .toList();
+        accounts =
+            accounts.map((a) => a['id'] == id ? {...a, ...saved} : a).toList();
         editingId = null;
         notice = '显示名称已更新';
       });
@@ -245,13 +251,13 @@ class AccountSettingsPageState extends State<AccountSettingsPage> {
   }
 
   String status(Json a) => switch (a['status']) {
-    'CONNECTED' || 'ACTIVE' => '已连接',
-    'DEMO' => '演示账户',
-    'AUTH_REQUIRED' || 'NEEDS_REAUTH' || 'REAUTH_REQUIRED' => '需要重新授权',
-    'ERROR' => '连接异常',
-    'SYNCING' => '正在同步',
-    _ => a['status']?.toString() ?? '状态未提供',
-  };
+        'CONNECTED' || 'ACTIVE' => '已连接',
+        'DEMO' => '演示账户',
+        'AUTH_REQUIRED' || 'NEEDS_REAUTH' || 'REAUTH_REQUIRED' => '需要重新授权',
+        'ERROR' => '连接异常',
+        'SYNCING' => '正在同步',
+        _ => a['status']?.toString() ?? '状态未提供',
+      };
   @override
   Widget build(BuildContext context) {
     if (section == 'add') {
@@ -356,92 +362,93 @@ class AccountSettingsPageState extends State<AccountSettingsPage> {
   }
 
   Widget accountCard(Json a) => Card(
-    margin: const EdgeInsets.only(top: 14),
-    color: const Color(0xfff5f7fb),
-    child: Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            a['displayName']?.toString().isNotEmpty == true
-                ? a['displayName']
-                : a['email'] ?? '邮箱',
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 4),
-          SelectableText(a['email'] ?? ''),
-          const SizedBox(height: 6),
-          Text(
-            '${a['provider'] ?? '邮箱'} · ${status(a)}',
-            style: const TextStyle(color: muted, fontSize: 12),
-          ),
-          if (a['lastSyncAt'] != null)
-            Text(
-              '最近同步：${a['lastSyncAt']}',
-              style: const TextStyle(color: muted, fontSize: 12),
-            ),
-          if (a['canDisconnect'] == false)
-            const Padding(
-              padding: EdgeInsets.only(top: 8),
-              child: Text(
-                '存在待处理或结果未确认的操作，暂不可断开',
-                style: TextStyle(fontSize: 12),
+        margin: const EdgeInsets.only(top: 14),
+        color: const Color(0xfff5f7fb),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                a['displayName']?.toString().isNotEmpty == true
+                    ? a['displayName']
+                    : a['email'] ?? '邮箱',
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
               ),
-            ),
-          const SizedBox(height: 10),
-          if (editingId == a['id']) ...[
-            TextField(
-              key: ValueKey('account-name-${a['id']}'),
-              controller: name,
-              enabled: !locked,
-              maxLength: 100,
-              decoration: const InputDecoration(labelText: '显示名称'),
-            ),
-            Wrap(
-              spacing: 8,
-              children: [
-                FilledButton(
-                  onPressed: locked ? null : saveName,
-                  child: const Text('保存名称'),
+              const SizedBox(height: 4),
+              SelectableText(a['email'] ?? ''),
+              const SizedBox(height: 6),
+              Text(
+                '${a['provider'] ?? '邮箱'} · ${status(a)}',
+                style: const TextStyle(color: muted, fontSize: 12),
+              ),
+              if (a['lastSyncAt'] != null)
+                Text(
+                  '最近同步：${a['lastSyncAt']}',
+                  style: const TextStyle(color: muted, fontSize: 12),
                 ),
-                TextButton(
-                  onPressed: locked
-                      ? null
-                      : () async {
-                          if (await canLeave() && mounted) {
-                            setState(() => editingId = null);
-                          }
-                        },
-                  child: const Text('取消'),
+              if (a['canDisconnect'] == false)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    '存在待处理或结果未确认的操作，暂不可断开',
+                    style: TextStyle(fontSize: 12),
+                  ),
                 ),
-              ],
-            ),
-          ] else
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                TextButton.icon(
-                  key: ValueKey('edit-account-${a['id']}'),
-                  onPressed: locked ? null : () => edit(a),
-                  icon: const Icon(Icons.edit_outlined, size: 18),
-                  label: const Text('编辑名称'),
+              const SizedBox(height: 10),
+              if (editingId == a['id']) ...[
+                TextField(
+                  key: ValueKey('account-name-${a['id']}'),
+                  controller: name,
+                  enabled: !locked,
+                  maxLength: 100,
+                  decoration: const InputDecoration(labelText: '显示名称'),
                 ),
-                TextButton.icon(
-                  key: ValueKey('disconnect-account-${a['id']}'),
-                  onPressed: locked || a['canDisconnect'] == false
-                      ? null
-                      : () => disconnect(a),
-                  icon: const Icon(Icons.link_off, size: 18),
-                  label: const Text('断开连接'),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    FilledButton(
+                      onPressed: locked ? null : saveName,
+                      child: const Text('保存名称'),
+                    ),
+                    TextButton(
+                      onPressed: locked
+                          ? null
+                          : () async {
+                              if (await canLeave() && mounted) {
+                                setState(() => editingId = null);
+                              }
+                            },
+                      child: const Text('取消'),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-        ],
-      ),
-    ),
-  );
+              ] else
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    TextButton.icon(
+                      key: ValueKey('edit-account-${a['id']}'),
+                      onPressed: locked ? null : () => edit(a),
+                      icon: const Icon(Icons.edit_outlined, size: 18),
+                      label: const Text('编辑名称'),
+                    ),
+                    TextButton.icon(
+                      key: ValueKey('disconnect-account-${a['id']}'),
+                      onPressed: locked || a['canDisconnect'] == false
+                          ? null
+                          : () => disconnect(a),
+                      icon: const Icon(Icons.link_off, size: 18),
+                      label: const Text('断开连接'),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      );
 }
 
 /// Kept for callers that embed the old entry point; the content itself is a page.
@@ -471,6 +478,8 @@ class AddAccountPageState extends State<AddAccountPage> {
       code = TextEditingController();
   String provider = 'QQ', error = '', notice = '';
   bool busy = false, confirming = false;
+  bool get protectsDocumentExit =>
+      busy || confirming || oauthFlow != null || dirty;
   bool get dirty =>
       email.text.isNotEmpty || name.text.isNotEmpty || code.text.isNotEmpty;
   Future<bool> canLeave() async {
@@ -555,9 +564,8 @@ class AddAccountPageState extends State<AddAccountPage> {
         body: {
           'provider': provider,
           'email': email.text.trim(),
-          'displayName': name.text.trim().isEmpty
-              ? email.text.trim()
-              : name.text.trim(),
+          'displayName':
+              name.text.trim().isEmpty ? email.text.trim() : name.text.trim(),
           'authorizationCode': code.text,
         },
       );
@@ -636,162 +644,165 @@ class AddAccountPageState extends State<AddAccountPage> {
 
   @override
   Widget build(BuildContext context) => Column(
-    children: [
-      Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          children: [
-            IconButton(
-              tooltip: '返回账户设置',
-              onPressed: busy || oauthFlow != null ? null : requestClose,
-              icon: const Icon(Icons.arrow_back),
-            ),
-            const Expanded(
-              child: Text(
-                '添加邮箱',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-              ),
-            ),
-          ],
-        ),
-      ),
-      Expanded(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-          children: [
-            const Text('授权连接', style: TextStyle(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 6),
-            const Text(
-              '真实账户需先配置 OAuth 应用。保存配置不等于邮箱已连接，授权在服务商页面完成。',
-              style: TextStyle(fontSize: 12, color: muted, height: 1.6),
-            ),
-            if (capabilities['features']?['oauthSettings'] == true)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: OutlinedButton.icon(
-                  onPressed: busy || oauthFlow != null
-                      ? null
-                      : systemOAuthSettings,
-                  icon: const Icon(Icons.admin_panel_settings_outlined),
-                  label: const Text('系统 OAuth 设置'),
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: '返回账户设置',
+                  onPressed: busy || oauthFlow != null ? null : requestClose,
+                  icon: const Icon(Icons.arrow_back),
                 ),
-              ),
-            ...((capabilities['providers'] as List?) ?? [])
-                .where((p) => p['supportsOAuth'] == true)
-                .map(
-                  (p) => ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.link, color: blue),
-                    title: Text(
-                      oauthProviderNames[p['provider']] ?? p['provider'],
-                    ),
-                    subtitle: Text(
-                      p['configured'] == true
-                          ? '本地配置完整 · 仍需服务商授权'
-                          : '服务器尚未配置 OAuth',
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                    trailing: OutlinedButton(
-                      onPressed:
-                          busy || oauthFlow != null || p['configured'] != true
-                          ? null
-                          : () => oauth(Map<String, dynamic>.from(p)),
-                      child: const Text('连接'),
-                    ),
+                const Expanded(
+                  child: Text(
+                    '添加邮箱',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
                   ),
                 ),
-            const Divider(height: 30),
-            const Text(
-              'QQ / 163 邮箱',
-              style: TextStyle(fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: provider,
-              items: const [
-                DropdownMenuItem(value: 'QQ', child: Text('QQ 邮箱')),
-                DropdownMenuItem(value: 'NETEASE', child: Text('163 邮箱')),
               ],
-              onChanged: busy || oauthFlow != null
-                  ? null
-                  : (v) => setState(() => provider = v!),
-              decoration: const InputDecoration(labelText: '服务商'),
             ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: email,
-              enabled: !busy && oauthFlow == null,
-              decoration: const InputDecoration(labelText: '邮箱地址'),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: name,
-              enabled: !busy && oauthFlow == null,
-              decoration: const InputDecoration(labelText: '显示名称（可选）'),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: code,
-              enabled: !busy && oauthFlow == null,
-              obscureText: true,
-              enableSuggestions: false,
-              autocorrect: false,
-              decoration: const InputDecoration(labelText: 'IMAP / SMTP 授权码'),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              '授权码将发送至你的服务器并加密保存。需在邮箱设置中先开启 IMAP / SMTP；请勿填写网页登录密码。',
-              style: TextStyle(fontSize: 11, color: muted, height: 1.6),
-            ),
-            const SizedBox(height: 12),
-            const Divider(height: 30),
-            const Text('本版边界', style: TextStyle(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            const Text(
-              '• Web 版支持隔离 HTML 阅读，远程图片默认阻止\n• 纯文本撰写；原生端使用纯文本阅读\n• 不提供离线缓存或离线变更重放\n• 列表每 30 秒刷新，支持手动同步\n• 仅显示服务器已同步范围内的搜索结果\n• 登录凭证仅存内存，关闭会话即清除',
-              style: TextStyle(fontSize: 12, color: muted, height: 1.9),
-            ),
-            if (oauthFlow != null)
-              TextButton(
-                onPressed: busy
-                    ? null
-                    : () {
-                        oauthFlow?.cancel();
-                        setState(() {
-                          oauthFlow = null;
-                          notice = '已停止等待。若授权仍在进行，请关闭授权窗口后再重试。';
-                        });
-                      },
-                child: const Text('取消等待'),
-              ),
-            if (notice.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 16),
-                child: Text(
-                  notice,
-                  style: const TextStyle(color: muted, fontSize: 12),
+          ),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+              children: [
+                const Text('授权连接',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 6),
+                const Text(
+                  '真实账户需先配置 OAuth 应用。保存配置不等于邮箱已连接，授权在服务商页面完成。',
+                  style: TextStyle(fontSize: 12, color: muted, height: 1.6),
                 ),
-              ),
-            if (error.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 16),
-                child: Text(
-                  error,
-                  style: const TextStyle(color: Colors.red, fontSize: 12),
+                if (capabilities['features']?['oauthSettings'] == true)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: OutlinedButton.icon(
+                      onPressed: busy || oauthFlow != null
+                          ? null
+                          : systemOAuthSettings,
+                      icon: const Icon(Icons.admin_panel_settings_outlined),
+                      label: const Text('系统 OAuth 设置'),
+                    ),
+                  ),
+                ...((capabilities['providers'] as List?) ?? [])
+                    .where((p) => p['supportsOAuth'] == true)
+                    .map(
+                      (p) => ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.link, color: blue),
+                        title: Text(
+                          oauthProviderNames[p['provider']] ?? p['provider'],
+                        ),
+                        subtitle: Text(
+                          p['configured'] == true
+                              ? '本地配置完整 · 仍需服务商授权'
+                              : '服务器尚未配置 OAuth',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        trailing: OutlinedButton(
+                          onPressed: busy ||
+                                  oauthFlow != null ||
+                                  p['configured'] != true
+                              ? null
+                              : () => oauth(Map<String, dynamic>.from(p)),
+                          child: const Text('连接'),
+                        ),
+                      ),
+                    ),
+                const Divider(height: 30),
+                const Text(
+                  'QQ / 163 邮箱',
+                  style: TextStyle(fontWeight: FontWeight.w600),
                 ),
-              ),
-
-            const SizedBox(height: 16),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: FilledButton(
-                onPressed: busy || oauthFlow != null ? null : add,
-                child: Text(busy ? '连接中…' : '添加邮箱'),
-              ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: provider,
+                  items: const [
+                    DropdownMenuItem(value: 'QQ', child: Text('QQ 邮箱')),
+                    DropdownMenuItem(value: 'NETEASE', child: Text('163 邮箱')),
+                  ],
+                  onChanged: busy || oauthFlow != null
+                      ? null
+                      : (v) => setState(() => provider = v!),
+                  decoration: const InputDecoration(labelText: '服务商'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: email,
+                  enabled: !busy && oauthFlow == null,
+                  decoration: const InputDecoration(labelText: '邮箱地址'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: name,
+                  enabled: !busy && oauthFlow == null,
+                  decoration: const InputDecoration(labelText: '显示名称（可选）'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: code,
+                  enabled: !busy && oauthFlow == null,
+                  obscureText: true,
+                  enableSuggestions: false,
+                  autocorrect: false,
+                  decoration:
+                      const InputDecoration(labelText: 'IMAP / SMTP 授权码'),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  '授权码将发送至你的服务器并加密保存。需在邮箱设置中先开启 IMAP / SMTP；请勿填写网页登录密码。',
+                  style: TextStyle(fontSize: 11, color: muted, height: 1.6),
+                ),
+                const SizedBox(height: 12),
+                const Divider(height: 30),
+                const Text('本版边界',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 8),
+                const Text(
+                  '• Web 版支持隔离 HTML 阅读，远程图片默认阻止\n• 纯文本撰写；原生端使用纯文本阅读\n• 不提供离线缓存或离线变更重放\n• 列表每 30 秒刷新，支持手动同步\n• 仅显示服务器已同步范围内的搜索结果\n• 登录凭证仅存内存，关闭会话即清除',
+                  style: TextStyle(fontSize: 12, color: muted, height: 1.9),
+                ),
+                if (oauthFlow != null)
+                  TextButton(
+                    onPressed: busy
+                        ? null
+                        : () {
+                            oauthFlow?.cancel();
+                            setState(() {
+                              oauthFlow = null;
+                              notice = '已停止等待。若授权仍在进行，请关闭授权窗口后再重试。';
+                            });
+                          },
+                    child: const Text('取消等待'),
+                  ),
+                if (notice.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: Text(
+                      notice,
+                      style: const TextStyle(color: muted, fontSize: 12),
+                    ),
+                  ),
+                if (error.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: Text(
+                      error,
+                      style: const TextStyle(color: Colors.red, fontSize: 12),
+                    ),
+                  ),
+                const SizedBox(height: 16),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: FilledButton(
+                    onPressed: busy || oauthFlow != null ? null : add,
+                    child: Text(busy ? '连接中…' : '添加邮箱'),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
-    ],
-  );
+          ),
+        ],
+      );
 }

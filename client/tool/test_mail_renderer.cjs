@@ -1,7 +1,10 @@
 const {chromium}=require('playwright');
 const assert=require('node:assert/strict');
 const path=require('node:path');
+const fs=require('node:fs');
 (async()=>{
+ const screenshots=path.resolve(__dirname,'../../test-results/mail-renderer');
+ fs.mkdirSync(screenshots,{recursive:true});
  const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH || '/usr/bin/chromium',headless:true,args:['--no-sandbox']});
  const page=await browser.newPage({viewport:{width:1000,height:850}});
  const requests=[];
@@ -16,15 +19,27 @@ const path=require('node:path');
  assert.deepEqual(requests,[],'Default renderer must make zero external requests');
  assert.equal(await page.evaluate(()=>window.hacked),undefined);
  assert.equal(await page.evaluate(()=>document.querySelector('iframe').contentDocument),null,'Opaque sandbox required');
- await page.screenshot({path:path.resolve(__dirname,'../../docs/screenshots/html-mail-desktop.png')});
+ await page.screenshot({path:path.join(screenshots,'html-mail-desktop.png')});
  await page.setViewportSize({width:390,height:844});
- await page.screenshot({path:path.resolve(__dirname,'../../docs/screenshots/html-mail-mobile.png')});
- const allowed=await page.evaluate(raw=>window.harborRenderMail(raw,true),'<img src="https://tracker.invalid/opt-in" alt="remote"><img src="data:image/svg+xml,x"><a href="data:text/html,x">data</a><a href="//tracker.invalid">relative</a>');
- assert(allowed.includes('src="https://tracker.invalid/opt-in"'));assert(!allowed.includes('data:image'));assert(!allowed.includes('href="data:'));assert(!allowed.includes('href="//'));
+ await page.screenshot({path:path.join(screenshots,'html-mail-mobile.png')});
+ const source='https://tracker.invalid/opt-in';
+ // Fresh PNG bytes from an authenticated proxy response are the only allowed image input.
+ const png='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z/D/PwAG/gL+DHWJ3gAAAABJRU5ErkJggg==';
+ const allowed=await page.evaluate(({source,png})=>window.harborRenderMail('<img src="'+source+'" alt="remote"><img src="data:image/svg+xml,x"><a href="data:text/html,x">data</a><a href="//tracker.invalid">relative</a>',true,{[source]:png}),{source,png});
+ assert(allowed.includes('src="data:image/png;base64,'));assert(!allowed.includes('src="https://'));assert(!allowed.includes('image/svg+xml'));assert(!allowed.includes('href="data:'));assert(!allowed.includes('href="//'));
  await page.evaluate(doc=>document.querySelector('iframe').srcdoc=doc,allowed);
- await page.waitForTimeout(300);assert(requests.some(x=>x.includes('/opt-in')));
+ await page.waitForTimeout(300);
+ const rendered=page.frames().find(f=>f!==page.mainFrame());
+ assert(rendered,'Sandbox frame exists');
+ await rendered.waitForFunction(()=>document.querySelector('img')?.naturalWidth===1);
+ assert.equal(await rendered.locator('img').evaluate(img=>img.naturalWidth),1,'Proxy PNG must really decode, not merely have an src attribute');
+ assert.deepEqual(requests,[],'Opt-in raster display must make zero original-origin or anonymous API requests');
+ const denied=await page.evaluate(source=>window.harborRenderMail('<img src="'+source+'">',true),source);
+ assert(!denied.includes('src="https:'),'Missing verified bytes fail closed even after opt-in');
+ await page.evaluate(doc=>document.querySelector('iframe').srcdoc=doc,denied);
+ await page.waitForTimeout(150);assert.deepEqual(requests,[]);
  // Every call starts blocked; opt-in is never persisted by the renderer.
  assert(!await page.evaluate(()=>window.harborRenderMail('<img src="https://tracker.invalid/new">',false).includes('src="https://tracker.invalid/new"')));
- console.log('PASS: layout, unsafe tags/attributes/URLs/CSS, opaque sandbox, zero default requests, explicit image opt-in, reset, desktop/mobile screenshots');
+ console.log('PASS: layout, unsafe tags/attributes/URLs/CSS, opaque sandbox, zero default requests, authenticated raster decode, no origin fallback, reset, desktop/mobile screenshots');
  await browser.close();
 })().catch(e=>{console.error(e);process.exit(1)});

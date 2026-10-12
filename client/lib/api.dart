@@ -30,8 +30,11 @@ class MailApi {
     Object? body,
     Map<String, String>? query,
     String? key,
+    bool followRedirects = true,
   }) async {
-    final req = http.Request(method, uri(path, query))..headers.addAll(headers);
+    final req = http.Request(method, uri(path, query))
+      ..followRedirects = followRedirects
+      ..headers.addAll(headers);
     if (key != null) req.headers['Idempotency-Key'] = key;
     if (body != null) req.body = jsonEncode(body);
     try {
@@ -47,12 +50,16 @@ class MailApi {
   }
 
   dynamic decode(http.Response response) {
+    if (response.statusCode == 401) token = null;
     dynamic data;
     try {
       data = response.body.isEmpty
           ? <String, dynamic>{}
           : jsonDecode(utf8.decode(response.bodyBytes));
     } catch (_) {
+      if (response.statusCode == 401) {
+        throw ApiException('UNAUTHORIZED', '请重新登录');
+      }
       throw ApiException('INVALID_RESPONSE', '服务器返回了无法识别的响应');
     }
     if (response.statusCode >= 400) {
@@ -148,6 +155,99 @@ class MailApi {
         .timeout(const Duration(seconds: 60));
     if (response.statusCode >= 400) decode(response);
     return response.bodyBytes;
+  }
+
+  /// Opt-in only. All network requests stay on the authenticated mail API.
+  /// Raster data is handed to the opaque iframe; remote URLs are never used there.
+  Future<Map<String, String>> remoteImages(
+    String messageId,
+    String accountId, {
+    bool Function()? isCurrent,
+  }) async {
+    final bearer = token;
+    bool current() =>
+        bearer != null && token == bearer && (isCurrent?.call() ?? true);
+    if (!current()) throw ApiException('UNAUTHORIZED', '请重新登录');
+    final path = '/messages/${Uri.encodeComponent(messageId)}/images';
+    final manifest = await request('GET', path,
+        query: {'accountId': accountId}, followRedirects: false);
+    if (!current()) throw ApiException('UNAUTHORIZED', '请重新登录');
+    if (manifest is! Map ||
+        manifest['items'] is! List ||
+        (manifest['items'] as List).length > 32) {
+      throw ApiException('INVALID_RESPONSE', '无法读取图片清单');
+    }
+    final items = List<dynamic>.from(manifest['items']);
+    for (final item in items) {
+      if (item is! Map ||
+          item['id'] is! String ||
+          !RegExp(r'^[a-f0-9]{64}$').hasMatch(item['id']) ||
+          item['source'] is! String ||
+          (item['source'] as String).length > 4096) {
+        throw ApiException('INVALID_RESPONSE', '无法读取图片清单');
+      }
+    }
+    final result = <String, String>{};
+    var totalBytes = 0;
+    const maxBatchBytes = 16 * 1024 * 1024;
+    // Sequential admission means a 401 stops the batch immediately: no anonymous
+    // retry, no remaining request, and no automatic retry of a tracking image.
+    for (final item in items) {
+      if (!current() || totalBytes >= maxBatchBytes) break;
+      try {
+        final req = http.Request(
+            'GET', uri('$path/${item['id']}', {'accountId': accountId}))
+          ..followRedirects = false
+          ..headers['Authorization'] = 'Bearer $bearer'
+          ..headers['Accept'] = 'image/png';
+        final streamed =
+            await client.send(req).timeout(const Duration(seconds: 12));
+        if (streamed.statusCode == 401) {
+          token = null;
+          await streamed.stream.listen((_) {}).cancel();
+          throw ApiException('UNAUTHORIZED', '请重新登录');
+        }
+        if (streamed.statusCode != 200 ||
+            streamed.headers['content-type']
+                    ?.split(';')
+                    .first
+                    .trim()
+                    .toLowerCase() !=
+                'image/png' ||
+            (streamed.contentLength ?? 0) > 4194304) {
+          await streamed.stream.listen((_) {}).cancel();
+          continue;
+        }
+        final bytes = BytesBuilder(copy: false);
+        await for (final chunk
+            in streamed.stream.timeout(const Duration(seconds: 12))) {
+          if (!current()) break;
+          if (bytes.length + chunk.length > 4194304) {
+            throw ApiException('IMAGE_TOO_LARGE', '图片过大');
+          }
+          if (totalBytes + bytes.length + chunk.length > maxBatchBytes) {
+            throw ApiException('IMAGE_BATCH_TOO_LARGE', '本封邮件图片总大小已达上限');
+          }
+          bytes.add(chunk);
+        }
+        if (!current()) break;
+        final png = bytes.takeBytes();
+        const magic = [137, 80, 78, 71, 13, 10, 26, 10];
+        if (png.length < 8 ||
+            Iterable<int>.generate(8).any((i) => png[i] != magic[i])) {
+          continue;
+        }
+        totalBytes += png.length;
+        result[item['source']] = 'data:image/png;base64,${base64Encode(png)}';
+      } on ApiException catch (e) {
+        if (e.code == 'UNAUTHORIZED') rethrow;
+        if (e.code == 'IMAGE_BATCH_TOO_LARGE') break;
+        // A failed image stays blocked. Never fall back to its original URL.
+      } catch (_) {
+        // The rest of the message remains readable when one image fails.
+      }
+    }
+    return result;
   }
 
   void dispose() {

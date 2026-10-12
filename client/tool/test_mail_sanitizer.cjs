@@ -16,8 +16,24 @@ const cases=[
  ['malformed nesting','<math><mtext><table><mglyph><style><!--</style><img title="--><img src=x onerror=alert(1)>">',s=>!s.includes('<math')&&!s.includes('onerror=')],
 ];
 for(const [name,input,check] of cases){assert(check(render(input,false)),name);console.log('PASS '+name)}
-const allowed=render('<img src="https://example.com/image" onerror="alert(1)"><img src="data:image/png;base64,x">',true);
-assert(allowed.includes('src="https://example.com/image"'));assert(allowed.includes('referrerpolicy="no-referrer"'));assert(!allowed.includes('onerror'));assert(!allowed.includes('data:image'));
-assert(!render('<img src="https://example.com/image">',false).includes('src='));
-console.log('PASS explicit opt-in and reset');
-console.log('11 sanitizer checks passed (DOM unit tests; not browser integration).');
+const png='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z/D/PwAG/gL+DHWJ3gAAAABJRU5ErkJggg==';
+const source='https://example.com/image';
+const allowed=render('<img src="'+source+'" onerror="alert(1)"><img src="data:image/png;base64,x">',true,{[source]:png});
+assert(allowed.includes('src="'+png+'"'));assert(allowed.includes('referrerpolicy="no-referrer"'));assert(!allowed.includes('onerror'));assert(!allowed.includes('src="https:'));
+assert(allowed.includes('img-src data:'));assert(!allowed.includes('img-src https:'));
+assert(!render('<img src="'+source+'">',true).includes('src='),'boolean alone never enables origin loading');
+assert(!render('<img src="'+source+'">',false,{[source]:png}).includes('src='));
+for(const payload of ['https://example.com/image','data:image/svg+xml;base64,abc','data:text/html,x','javascript:x','data:image/png;base64,eA==']) {
+ assert(!render('<img src="'+source+'">',true,{[source]:payload}).includes('src='),'Only verified-format PNG payloads are accepted');
+}
+assert(!render('<img src="toString">',true,{}).includes('src='),'No prototype lookups');
+assert(!render('<img src="'+source+'">',true,'malformed-json').includes('src='));
+const repeated=render(('<img src="'+source+'">').repeat(1000),true,{[source]:png});
+assert.equal((repeated.match(/<img /g)||[]).length,32,'Repeated references consume placement budget');
+const largePng='data:image/png;base64,iVBORw0KGgo'+'A'.repeat(5592380);
+const amplified=render(('<img src="'+source+'">').repeat(1000),true,{[source]:largePng});
+assert((amplified.match(/<img /g)||[]).length<=4,'Repeated large references consume data URL budget');
+assert(amplified.length<23000000,'Repeated references cannot expand into unbounded srcdoc');
+console.log('PASS repeated-image placement and aggregate-srcdoc budgets');
+console.log('PASS authenticated raster map, no original-URL fallback, malformed map, prototype keys, explicit opt-in and reset');
+console.log('Sanitizer checks passed (DOM unit tests; browser integration runs separately).');

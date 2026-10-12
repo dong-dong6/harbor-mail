@@ -655,8 +655,9 @@ void main() {
             'providers': [],
           });
         }
-        if (request.url.path.endsWith('/accounts'))
+        if (request.url.path.endsWith('/accounts')) {
           return jsonResponse({'items': []});
+        }
         return jsonResponse(snapshot(demo: true));
       });
       addTearDown(api.dispose);

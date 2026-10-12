@@ -471,16 +471,16 @@ void main() {
     expect(find.text('连接邮箱'), findsWidgets);
     await tester.tap(find.text('连接邮箱').first);
     await tester.pumpAndSettle();
-    expect(find.byType(SettingsDialog), findsOneWidget);
+    expect(find.byType(AccountSettingsPage), findsOneWidget);
     expect(find.byType(ComposeDialog), findsNothing);
-    await tester.tap(find.text('关闭'));
+    await tester.tap(find.byTooltip('返回邮箱'));
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('写邮件'));
     await tester.pumpAndSettle();
-    expect(find.byType(SettingsDialog), findsOneWidget);
+    expect(find.byType(AccountSettingsPage), findsOneWidget);
     expect(find.byType(ComposeDialog), findsNothing);
-    await tester.tap(find.text('关闭'));
+    await tester.tap(find.byTooltip('返回邮箱'));
     await tester.pumpAndSettle();
     expect(
       fixture.requests.where((r) => r.url.path.endsWith('/send')),

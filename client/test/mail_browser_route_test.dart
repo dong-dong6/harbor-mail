@@ -6,6 +6,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:harbor_mail/api.dart';
 import 'package:harbor_mail/main.dart';
 import 'package:harbor_mail/mail_navigation.dart';
+import 'package:harbor_mail/oauth_settings.dart';
+import 'oauth_test_fixtures.dart' as oauth;
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -30,36 +32,37 @@ const _accounts = <Map<String, dynamic>>[
 ];
 
 Map<String, dynamic> _message(int index, {String account = 'alpha'}) => {
-  'id': 'm$index',
-  'accountId': account,
-  'fromName': 'Synthetic sender $index',
-  'fromAddress': 'sender$index@example.invalid',
-  'subject': 'Synthetic subject $index',
-  'snippet': 'Synthetic preview $index',
-  'bodyText': 'Synthetic body $index',
-  'receivedAt': '2026-10-01T08:00:00Z',
-  'isRead': false,
-  'isStarred': false,
-  'revision': 1,
-  'to': <Object>[],
-  'attachments': <Object>[],
-};
+      'id': 'm$index',
+      'accountId': account,
+      'fromName': 'Synthetic sender $index',
+      'fromAddress': 'sender$index@example.invalid',
+      'subject': 'Synthetic subject $index',
+      'snippet': 'Synthetic preview $index',
+      'bodyText': 'Synthetic body $index',
+      'receivedAt': '2026-10-01T08:00:00Z',
+      'isRead': false,
+      'isStarred': false,
+      'revision': 1,
+      'to': <Object>[],
+      'attachments': <Object>[],
+    };
 
 http.Response _json(Object value, {int status = 200}) => http.Response(
-  jsonEncode(value),
-  status,
-  headers: {'content-type': 'application/json; charset=utf-8'},
-);
+      jsonEncode(value),
+      status,
+      headers: {'content-type': 'application/json; charset=utf-8'},
+    );
 
 http.Response _page(
   Iterable<Map<String, dynamic>> messages, {
   String? cursor,
-}) => _json({
-  'items': messages.toList(),
-  'coverage': 'DEMO',
-  'hasMore': cursor != null,
-  if (cursor != null) 'nextCursor': cursor,
-});
+}) =>
+    _json({
+      'items': messages.toList(),
+      'coverage': 'DEMO',
+      'hasMore': cursor != null,
+      if (cursor != null) 'nextCursor': cursor,
+    });
 
 class _Fixture {
   final List<Map<String, dynamic>> accounts;
@@ -67,7 +70,7 @@ class _Fixture {
   final List<http.Request> requests = [];
   final Map<String, Completer<http.Response>> delayedDetails = {};
   FutureOr<http.Response> Function(Uri uri)? listResponse;
-  bool missingDetails = false;
+  bool missingDetails = false, oauthFeature = false;
   late final MailApi api;
 
   _Fixture() : accounts = _accounts {
@@ -86,9 +89,15 @@ class _Fixture {
             'demoMode': true,
             'providers': <Object>[],
             'limits': {'maxAttachmentBytes': 10485760},
-            'features': {'html': false, 'offlineCache': false},
+            'features': {
+              'html': false,
+              'offlineCache': false,
+              'oauthSettings': oauthFeature
+            },
           });
         }
+        if (path.endsWith('/settings/oauth'))
+          return _json(oauth.snapshot(demo: true));
         if (path.endsWith('/folders')) {
           return _json({'items': <Object>[]});
         }
@@ -97,16 +106,15 @@ class _Fixture {
           if (listResponse != null) return await listResponse!(request.url);
           if (accounts.isEmpty) return _page([]);
           final isBeta = request.url.queryParameters['accountId'] == 'beta';
-          final filtered =
-              request.url.queryParameters['folder'] == 'STARRED' ||
+          final filtered = request.url.queryParameters['folder'] == 'STARRED' ||
               request.url.queryParameters.containsKey('query');
           return _page([
             _message(
               isBeta
                   ? 2
                   : filtered
-                  ? 1
-                  : 0,
+                      ? 1
+                      : 0,
               account: isBeta ? 'beta' : 'alpha',
             ),
           ]);
@@ -325,6 +333,20 @@ void main() {
     expect(await go, isFalse);
     expect(nav.location, '/settings/accounts');
     expect(find.text('unsaved name'), findsOneWidget);
+    await _disposeMailbox(tester);
+  });
+  testWidgets(
+      'copied OAuth settings URL resumes authenticated readonly settings',
+      (tester) async {
+    final f = _Fixture()..oauthFeature = true;
+    final nav = _Navigation('/settings/oauth');
+    await _signIn(tester, f, navigation: nav);
+    expect(find.byType(OAuthSettingsPage), findsOneWidget);
+    expect(nav.location, '/settings/oauth');
+    final go = nav.go('/settings/accounts');
+    await tester.pumpAndSettle();
+    expect(await go, isTrue);
+    expect(find.byType(OAuthSettingsPage), findsNothing);
     await _disposeMailbox(tester);
   });
 }

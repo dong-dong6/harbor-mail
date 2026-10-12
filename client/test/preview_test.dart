@@ -58,10 +58,14 @@ void main() {
       await _savePreview(tester, key, '${entry.key}-onboarding');
       await tester.tap(find.text('连接邮箱').first);
       await tester.pumpAndSettle();
-      expect(find.byType(SettingsDialog), findsOneWidget);
+      expect(find.byType(AccountSettingsPage), findsOneWidget);
       expect(tester.takeException(), isNull);
       await _savePreview(tester, key, '${entry.key}-account-settings');
-      await tester.tap(find.text('关闭'));
+      if (find.byTooltip('返回账户设置').evaluate().isNotEmpty) {
+        await tester.tap(find.byTooltip('返回账户设置'));
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.byTooltip('返回邮箱'));
       await tester.pumpAndSettle();
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
@@ -79,7 +83,22 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       await _savePreview(tester, key, '${entry.key}-synthetic');
+      await tester.ensureVisible(find.text('回复'));
+      await tester.tap(find.text('回复'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await _savePreview(tester, key, '${entry.key}-inline-reply');
+      await tester.tap(find.byTooltip('关闭编辑'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('放弃更改'));
+      await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('返回列表'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('账户与设置'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await _savePreview(tester, key, '${entry.key}-connected-accounts');
+      await tester.tap(find.byTooltip('返回邮箱'));
       await tester.pumpAndSettle();
       await tester.tap(find.byType(TextField).first);
       await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);

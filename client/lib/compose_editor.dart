@@ -44,6 +44,7 @@ class ComposeEditorState extends State<ComposeEditor> {
       cc = TextEditingController(),
       subject = TextEditingController(),
       body = TextEditingController();
+  final editorFocus = FocusNode();
   late String account;
   String? id;
   int? revision;
@@ -100,6 +101,7 @@ class ComposeEditorState extends State<ComposeEditor> {
 
   @override
   void dispose() {
+    editorFocus.dispose();
     to.dispose();
     cc.dispose();
     subject.dispose();
@@ -214,7 +216,10 @@ class ComposeEditorState extends State<ComposeEditor> {
           ) ==
           true;
     } finally {
-      if (mounted) setState(() => confirmingClose = false);
+      if (mounted) {
+        setState(() => confirmingClose = false);
+        editorFocus.requestFocus();
+      }
     }
   }
 
@@ -471,27 +476,31 @@ class ComposeEditorState extends State<ComposeEditor> {
           bindings: {
             const SingleActivator(LogicalKeyboardKey.escape): requestClose,
           },
-          child: widget.inline
-              ? Container(
-                  key: const Key('inline-compose'),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: const Color(0xffd8e0eb)),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: editor(),
-                )
-              : Dialog(
-                  insetPadding: EdgeInsets.all(
-                    MediaQuery.sizeOf(context).width < 600 ? 8 : 20,
-                  ),
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(
-                      maxWidth: 780,
-                      maxHeight: 760,
+          child: Focus(
+            focusNode: editorFocus,
+            autofocus: true,
+            child: widget.inline
+                ? Container(
+                    key: const Key('inline-compose'),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: const Color(0xffd8e0eb)),
+                      borderRadius: BorderRadius.circular(12),
                     ),
                     child: editor(),
+                  )
+                : Dialog(
+                    insetPadding: EdgeInsets.all(
+                      MediaQuery.sizeOf(context).width < 600 ? 8 : 20,
+                    ),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxWidth: 780,
+                        maxHeight: 760,
+                      ),
+                      child: editor(),
+                    ),
                   ),
-                ),
+          ),
         ),
       );
 }
