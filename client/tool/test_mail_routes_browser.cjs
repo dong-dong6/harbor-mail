@@ -70,17 +70,43 @@ const server=createServer((req,res)=>{
    await back();await hash('/mail');await forward();await hash('/mail/m1');
    console.log(`CHECK ${width}: browser history and inline editor`);
    const reply=page.getByRole('button',{name:'回复',exact:true});await reveal(reply);await reply.click();
-   const body=page.getByRole('textbox',{name:'回复正文',exact:true});await reveal(body);await body.fill('KEEP REPLY THROUGH BROWSER BACK');
+   const body=page.getByRole('textbox',{name:/^回复正文(?:\s+从这里开始…)?$/});
+   const replyText='KEEP REPLY THROUGH BROWSER BACK';
+   const settleFocus=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+   const focusBody=async()=>{await reveal(body);await body.click();await settleFocus();};
+   await focusBody();
+   // Flutter installs its text-input connection after focus. Real keyboard
+   // events exercise that connection; immediate DOM fill can precede activation.
+   await body.pressSequentially(replyText,{delay:20});
+   await settleFocus();
+   assert.equal(await body.inputValue(),replyText,'real typing populates reply');
+   // Blur, rebuild via a real quote toggle, then refocus. Flutter must restore
+   // its controller value, proving the text is not merely a native DOM value.
+   await reveal(page.getByRole('button',{name:'显示原邮件',exact:true}));
+   await page.getByRole('button',{name:'显示原邮件',exact:true}).click();
+   await page.getByRole('button',{name:'收起原邮件',exact:true}).click();
+   await focusBody();
+   assert.equal(await body.inputValue(),replyText,'reply controller retains text through blur/rebuild/refocus');
+   await page.screenshot({path:path.join(out,`inline-before-reload-${width}.png`)});
+   console.log(`CHECK ${width}: real typed reply retained before document navigation`);
    assert.equal(await page.locator('[role="dialog"],[role="alertdialog"]').count(),0,'reply is inline rather than modal');
    if(width===1440){
     const warned=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Missing dirty beforeunload warning')),10000);page.once('dialog',async d=>{try{assert.equal(d.type(),'beforeunload');await d.dismiss();clearTimeout(timer);resolve();}catch(e){clearTimeout(timer);reject(e);}});});
-    await Promise.all([warned,page.reload({waitUntil:'domcontentloaded'}).catch(()=>{})]);
-    assert.equal(await body.inputValue(),'KEEP REPLY THROUGH BROWSER BACK','cancelled document reload preserves inline reply');
+    const documentIdentity=await page.evaluateHandle(()=>document);
+    // Canceled CDP reload may retain its navigation wait until timeout. The
+    // native warning and original-document identity are the actual checks.
+    void page.reload({waitUntil:'domcontentloaded',timeout:5000}).catch(()=>{});
+    await warned;await settleFocus();
+    assert.equal(await documentIdentity.evaluate(original=>original===document),true,'dismissing native warning keeps the original document');
+    await documentIdentity.dispose();
+    await focusBody();
+    assert.equal(await body.inputValue(),replyText,'cancelled document reload preserves inline reply');
+    await page.screenshot({path:path.join(out,`inline-after-cancelled-reload-${width}.png`)});
    }
    assert.equal(await iframe.evaluate(e=>e.style.pointerEvents),'auto','iframe is interactive outside dialogs');
    await reveal(page.getByRole('button',{name:'显示原邮件',exact:true}));await page.getByRole('button',{name:'显示原邮件',exact:true}).click();await page.getByRole('button',{name:'收起原邮件',exact:true}).click();
    await back();await page.getByRole('alertdialog').waitFor();await semantic('放弃未保存的更改？',false,true).waitFor();await hash('/mail/m1');assert.equal(await iframe.evaluate(e=>e.style.pointerEvents),'none','dialog shields native HTML iframe');
-   await page.getByRole('button',{name:'继续编辑',exact:true}).click();assert.equal(await body.inputValue(),'KEEP REPLY THROUGH BROWSER BACK');
+   await page.getByRole('button',{name:'继续编辑',exact:true}).click();await focusBody();assert.equal(await body.inputValue(),replyText,'cancelled in-app Back preserves controller text');
    await back();await page.getByRole('button',{name:'放弃更改',exact:true}).click();await hash('/mail');await forward();await hash('/mail/m1');
    console.log(`CHECK ${width}: refresh and resume`);
    await page.reload();await login();await hash('/mail/m1');await semantic('ROUTE SUBJECT ONE').waitFor();
