@@ -1,0 +1,72 @@
+// Built Flutter app + real History API + native HTML iframe. Synthetic data only.
+const {chromium}=require('playwright');
+const {createServer}=require('node:http');
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const root=path.resolve(__dirname,'../build/web'),out=path.resolve(__dirname,'../../test-results/mail-routes');fs.mkdirSync(out,{recursive:true});
+const mail=id=>({id,accountId:'demo',fromName:'Synthetic sender',fromAddress:'sender@example.invalid',subject:id==='m1'?'ROUTE SUBJECT ONE':'ROUTE SUBJECT TWO',receivedAt:'2026-10-11T10:42:00Z',to:[{name:'Synthetic recipient',address:'recipient@example.invalid'}],cc:[{name:'Synthetic copy',address:'copy@example.invalid'}],bodyHtml:'<h1>BODY START</h1><div style="height:360px;background:#eef">SYNTHETIC HTML BODY</div>',bodyText:'SYNTHETIC PLAINTEXT BODY',attachments:[],isRead:true,revision:1});
+const accounts=[{id:'demo',displayName:'Synthetic',email:'demo@example.invalid',provider:'GMAIL',status:'DEMO',canDisconnect:true}];
+let delayed=false;
+const server=createServer((req,res)=>{
+ const p=new URL(req.url,'http://localhost').pathname;
+ if(p.startsWith('/api/v1')){
+  let body={items:[]};
+  if(p.endsWith('/auth/login'))body={accessToken:'synthetic-token'};
+  if(p.endsWith('/accounts'))body={items:accounts};
+  if(p.endsWith('/settings/capabilities'))body={demoMode:true,providers:[],features:{html:true}};
+  if(p.endsWith('/messages'))body={items:[mail('m1'),mail('m2')],hasMore:false};
+  if(/\/messages\/m[12]$/.test(p))body=mail(p.split('/').pop());
+  if(p.endsWith('/messages/missing')){res.statusCode=404;body={code:'NOT_FOUND',message:'邮件不存在或没有访问权限'};}
+  res.setHeader('content-type','application/json');const send=()=>res.end(JSON.stringify(body));
+  if(delayed&&p.endsWith('/messages/m2'))setTimeout(send,800);else send();return;
+ }
+ const file=path.join(root,p==='/'?'index.html':p);
+ res.setHeader('content-type',({'.js':'text/javascript','.wasm':'application/wasm','.json':'application/json','.otf':'font/otf','.ttf':'font/ttf','.png':'image/png'})[path.extname(file)]||'text/html');
+ try{res.end(fs.readFileSync(file));}catch{res.statusCode=404;res.end();}
+});
+(async()=>{
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`;
+ const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
+ try{
+  for(const width of [1440,390]){
+   const page=await browser.newPage({viewport:{width,height:1100}});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+   await page.route('**/*',r=>r.request().url().startsWith(base)||r.request().url().startsWith('data:')?r.continue():r.abort());
+   const hash=route=>page.waitForFunction(value=>location.hash===value,'#'+route);
+   const login=async()=>{const placeholder=page.locator('flt-semantics-placeholder');if(await placeholder.count())await placeholder.evaluate(e=>e.click());await page.getByRole('textbox').first().fill('owner');await page.getByRole('textbox').nth(1).fill('synthetic-only');await page.getByRole('button',{name:'登录',exact:true}).click();};
+   const back=()=>page.evaluate(()=>history.back()),forward=()=>page.evaluate(()=>history.forward());
+   const reveal=async locator=>{for(let n=0;n<12;n++){const box=await locator.boundingBox().catch(()=>null);if(box&&box.y>=0&&box.y+Math.min(box.height,80)<1050)return;await page.mouse.move(width-14,850);await page.mouse.wheel(0,box&&box.y<0?-450:450);await page.waitForTimeout(120);}};
+   await page.goto(base+'/#/mail/m2');await login();await hash('/mail/m2');
+   await page.getByText('ROUTE SUBJECT TWO',{exact:true}).waitFor();
+   await page.getByText('发件人：Synthetic sender <sender@example.invalid>',{exact:true}).waitFor();
+   await page.getByText('收件人：Synthetic recipient <recipient@example.invalid>',{exact:true}).waitFor();
+   await page.getByText('抄送：Synthetic copy <copy@example.invalid>',{exact:true}).waitFor();
+   await page.getByText(/接收时间：2026-10-11/).waitFor();
+   const iframe=page.locator('iframe[title="邮件正文"]');await iframe.waitFor();
+   const subjectBox=await page.getByText('ROUTE SUBJECT TWO',{exact:true}).boundingBox();const bodyBox=await iframe.boundingBox();
+   assert(subjectBox.y>=0&&bodyBox.y>subjectBox.y+subjectBox.height,'mail header stays above HTML iframe');
+   assert(bodyBox.x>=0&&bodyBox.x+bodyBox.width<=width+1,'iframe respects viewport');
+   assert.equal(await iframe.evaluate(e=>e.contentDocument),null,'HTML body stays opaque sandboxed');
+   await page.screenshot({path:path.join(out,`header-${width}.png`)});
+   await page.getByRole('button',{name:'返回列表',exact:true}).click();await hash('/mail');
+   await page.getByText('ROUTE SUBJECT ONE',{exact:true}).click();await hash('/mail/m1');
+   await back();await hash('/mail');await forward();await hash('/mail/m1');
+   const reply=page.getByRole('button',{name:'回复',exact:true});await reveal(reply);await reply.click();
+   const body=page.getByRole('textbox',{name:'回复正文',exact:true});await reveal(body);await body.fill('KEEP REPLY THROUGH BROWSER BACK');
+   assert.equal(await page.getByRole('dialog').count(),0,'reply is inline rather than modal');
+   assert.equal(await iframe.evaluate(e=>e.style.pointerEvents),'auto','iframe is interactive outside dialogs');
+   await reveal(page.getByRole('button',{name:'显示原邮件',exact:true}));await page.getByRole('button',{name:'显示原邮件',exact:true}).click();await page.getByRole('button',{name:'收起原邮件',exact:true}).click();
+   await back();await page.getByText('放弃未保存的更改？',{exact:true}).waitFor();await hash('/mail/m1');assert.equal(await iframe.evaluate(e=>e.style.pointerEvents),'none','dialog shields native HTML iframe');
+   await page.getByRole('button',{name:'继续编辑',exact:true}).click();assert.equal(await body.inputValue(),'KEEP REPLY THROUGH BROWSER BACK');
+   await back();await page.getByRole('button',{name:'放弃更改',exact:true}).click();await hash('/mail');await forward();await hash('/mail/m1');
+   await page.reload();await login();await hash('/mail/m1');await page.getByText('ROUTE SUBJECT ONE',{exact:true}).waitFor();
+   assert.deepEqual(await page.evaluate(()=>Object.keys(localStorage).filter(k=>/token|auth|password/i.test(k))),[]);
+   if(width===1440){
+    await page.getByRole('button',{name:'账户与设置',exact:true}).last().click();await hash('/settings/accounts');
+    await page.getByRole('button',{name:'添加邮箱',exact:true}).click();await hash('/settings/add');
+    await back();await hash('/settings/accounts');await back();await hash('/mail/m1');
+   }
+   await page.evaluate(()=>{location.hash='/mail/missing';});await page.getByText('加载失败，重试',{exact:true}).waitFor();await hash('/mail/missing');
+   assert.equal(errors.length,0,errors.join('\n'));await page.close();
+  }
+  console.log('PASS built Flutter routing/header/inline at desktop and mobile: deep link login, browser Back/Forward, dirty keep/discard, refresh resume, settings/add, unavailable mail, sandbox and native editable reply');
+ }finally{await browser.close();server.close();}
+})().catch(e=>{console.error(e);server.close();process.exitCode=1;});
