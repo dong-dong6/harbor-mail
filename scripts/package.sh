@@ -34,6 +34,19 @@ if os.environ.get('GITHUB_ACTIONS') == 'true':
     build_info['ciRunId'] = os.environ.get('GITHUB_RUN_ID')
     build_info['ciRunAttempt'] = os.environ.get('GITHUB_RUN_ATTEMPT')
     build_info['ciWorkflow'] = os.environ.get('GITHUB_WORKFLOW')
+    # Record same-run protocol/APK evidence rather than leaving local pending
+    # markers in a successfully validated release artifact.
+    passkeys = json.loads((r/'test-results/passkeys-browser.json').read_text())
+    if passkeys.get('result') != 'passed' or passkeys.get('syntheticOnly') is not True:
+        raise SystemExit('Missing successful isolated browser Passkey evidence')
+    apk = json.loads((r/'server/src/main/resources/META-INF/android-download/manifest.json').read_text())
+    if apk.get('sourceCommit') != os.environ.get('GITHUB_SHA'):
+        raise SystemExit('APK source commit differs from packaged source')
+    build_info['browserEndToEnd'] = 'passed exact-commit CI Web navigation and isolated WebAuthn checks'
+    build_info['passkeyBrowser'] = passkeys
+    build_info['nativeAndroidBuild'] = 'passed exact-commit CI development APK build and integrated HTTP download smoke'
+    build_info['androidDownload'] = apk
+    build_info['nativeWindowsBuild'] = 'separate required windows-native CI job; hardware authentication not tested'
 
 try:
     build_info['packagedSourceCommit']=subprocess.check_output(

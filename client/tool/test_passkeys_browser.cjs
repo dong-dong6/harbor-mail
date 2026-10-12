@@ -16,8 +16,23 @@ const {chromium} = require('playwright');
     args: ['--no-sandbox', '--disable-dev-shm-usage']});
   try {
     const page = await browser.newPage();
-    // A same-origin health document provides localhost WebAuthn context without a Flutter build.
-    await page.goto(`${base}/health`, {waitUntil: 'domcontentloaded'});
+    // Only the test document is synthetic. API traffic still reaches the real
+    // localhost backend, with its normal origin checks and restrictive JSON CSP.
+    // A JSON API response cannot itself host this harness: default-src 'none'
+    // correctly disallows fetch from such a document.
+    await page.route(`${base.origin}/`, route => route.fulfill({
+      status: 200, contentType: 'text/html',
+      body: '<!doctype html><meta charset="utf-8"><title>Isolated WebAuthn harness</title>',
+    }));
+    page.on('requestfailed', request => console.error('Browser request failed:',
+      new URL(request.url()).pathname, request.failure()?.errorText));
+    page.on('response', response => {
+      if (response.status() >= 400) console.error('Browser HTTP status:',
+        response.status(), new URL(response.url()).pathname);
+    });
+    await page.goto(base.origin, {waitUntil: 'domcontentloaded'});
+    assert.equal(await page.evaluate(() => isSecureContext), true,
+      'WebAuthn requires a trustworthy localhost context');
     const cdp = await page.context().newCDPSession(page);
     await cdp.send('WebAuthn.enable');
     await cdp.send('WebAuthn.addVirtualAuthenticator', {options: {
