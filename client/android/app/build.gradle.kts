@@ -7,7 +7,10 @@ plugins {
 android {
     namespace = "dev.harbor.harbor_mail"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // CI may select a verified preinstalled NDK; local builds keep Flutter's default.
+    ndkVersion = providers.environmentVariable("HARBOR_ANDROID_NDK_VERSION")
+        .orElse(flutter.ndkVersion).get()
+    buildToolsVersion = "36.0.0"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -30,6 +33,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Development APKs coexist with a separately signed release app.
+            applicationIdSuffix = ".dev"
+        }
         release {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.

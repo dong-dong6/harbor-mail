@@ -4,6 +4,8 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   file_saver
+  local_auth_windows
+  passkeys_windows
   url_launcher_windows
 )
 

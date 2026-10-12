@@ -9,6 +9,19 @@ import 'api.dart';
 
 typedef Json = Map<String, dynamic>;
 const muted = Color(0xff7c899c);
+const _sendUncertainMessage = '提交结果暂不确定。请通过下方按钮查看发件状态，不要重复发送。';
+
+// A guard belongs to one action. A lock/unlock or logout invalidates it even
+// when this editor remains mounted and the bearer later appears unchanged.
+class _ComposeSession {
+  final MailApi api;
+  final String? bearer;
+  final bool Function()? current;
+
+  _ComposeSession(this.api, this.current) : bearer = api.token;
+}
+
+class _ComposeSessionChanged implements Exception {}
 
 class ComposeEditor extends StatefulWidget {
   final MailApi api;
@@ -21,6 +34,7 @@ class ComposeEditor extends StatefulWidget {
   final int maxBytes;
   final void Function(String) onSaved;
   final VoidCallback? onViewStatus;
+  final bool Function() Function()? captureSessionGuard;
   const ComposeEditor({
     super.key,
     required this.api,
@@ -34,6 +48,7 @@ class ComposeEditor extends StatefulWidget {
     required this.maxBytes,
     required this.onSaved,
     this.onViewStatus,
+    this.captureSessionGuard,
   });
   @override
   ComposeEditorState createState() => ComposeEditorState();
@@ -56,7 +71,28 @@ class ComposeEditorState extends State<ComposeEditor> {
   bool confirmingClose = false, confirmingSend = false, quoteExpanded = false;
   String quotedText = '';
   bool get dirty => snapshot != savedSnapshot;
-  bool get locked => busy || sendUncertain || confirmingClose || confirmingSend;
+  bool get sessionAvailable =>
+      mounted && (widget.captureSessionGuard?.call().call() ?? true);
+  bool get locked =>
+      !sessionAvailable ||
+      busy ||
+      sendUncertain ||
+      confirmingClose ||
+      confirmingSend;
+
+  _ComposeSession _captureSession() =>
+      _ComposeSession(widget.api, widget.captureSessionGuard?.call());
+
+  bool _isCurrentSession(_ComposeSession session) =>
+      mounted &&
+      identical(widget.api, session.api) &&
+      session.api.token == session.bearer &&
+      (session.current?.call() ?? true);
+
+  void _requireCurrentSession(_ComposeSession session) {
+    if (!_isCurrentSession(session)) throw _ComposeSessionChanged();
+  }
+
   late String savedSnapshot;
   String get snapshot =>
       jsonEncode([account, to.text, cc.text, subject.text, body.text]);
@@ -115,7 +151,8 @@ class ComposeEditorState extends State<ComposeEditor> {
       .where((s) => s.isNotEmpty)
       .map((s) => <String, dynamic>{'address': s})
       .toList();
-  Future<void> persist() async {
+  Future<void> _persist(_ComposeSession session) async {
+    _requireCurrentSession(session);
     final payload = {
       'accountId': account,
       'to': recipients(to.text),
@@ -126,40 +163,50 @@ class ComposeEditorState extends State<ComposeEditor> {
         'replyToMessageId': widget.reply!['id'],
       if (revision != null) 'revision': revision,
     };
-    final data = await widget.api.request(
+    final data = await session.api.request(
       id == null ? 'POST' : 'PATCH',
       id == null ? '/drafts' : '/drafts/$id',
       body: payload,
     );
+    _requireCurrentSession(session);
     id = data['id'];
     revision = data['revision'];
     savedSnapshot = snapshot;
   }
 
-  Future<void> act(Future<void> Function() work) async {
+  Future<void> _act(
+    Future<void> Function(_ComposeSession) work, {
+    _ComposeSession? session,
+  }) async {
     if (locked) return;
+    final started = session ?? _captureSession();
+    if (!_isCurrentSession(started)) return;
     setState(() {
       busy = true;
       error = '';
     });
     try {
-      await work();
+      await work(started);
+    } on _ComposeSessionChanged {
+      // The completed step cannot authorize any work in a replacement session.
     } catch (e) {
-      if (mounted) setState(() => error = e.toString());
+      if (_isCurrentSession(started)) setState(() => error = e.toString());
     } finally {
       if (mounted) setState(() => busy = false);
     }
   }
 
-  Future<void> save() => act(() async {
-        await persist();
+  Future<void> save() => _act((session) async {
+        await _persist(session);
+        _requireCurrentSession(session);
         widget.onSaved('草稿已保存');
       });
-  Future<void> upload() => act(() async {
+  Future<void> upload() => _act((session) async {
         final picked = await FilePicker.platform.pickFiles(
           withData: false,
           withReadStream: true,
         );
+        _requireCurrentSession(session);
         if (picked == null) return;
         final file = picked.files.single;
         if (file.size > widget.maxBytes) {
@@ -176,54 +223,61 @@ class ComposeEditorState extends State<ComposeEditor> {
           }
           final buffer = BytesBuilder(copy: false);
           await for (final chunk in stream) {
+            _requireCurrentSession(session);
             if (buffer.length + chunk.length > widget.maxBytes) {
               throw ApiException('FILE_TOO_LARGE', '附件超过上传上限');
             }
             buffer.add(chunk);
           }
+          _requireCurrentSession(session);
           bytes = buffer.takeBytes();
         }
-        await persist();
-        await widget.api.upload(id!, file.name, bytes);
-        final data = await widget.api.request('GET', '/drafts');
+        await _persist(session);
+        _requireCurrentSession(session);
+        await session.api.upload(id!, file.name, bytes);
+        _requireCurrentSession(session);
+        final data = await session.api.request('GET', '/drafts');
+        _requireCurrentSession(session);
         final updated =
             (data['items'] as List).where((d) => d['id'] == id).firstOrNull;
         if (updated != null) revision = updated['revision'];
-        if (mounted) setState(() => attachments.add(file.name));
+        setState(() => attachments.add(file.name));
       });
   Future<bool> canLeave() async {
     if (locked) return false;
     if (!dirty) return true;
+    final session = _captureSession();
     setState(() => confirmingClose = true);
     try {
-      return await showDialog<bool>(
-            context: context,
-            barrierDismissible: false,
-            builder: (ctx) => AlertDialog(
-              title: const Text('放弃未保存的更改？'),
-              content: const Text('这些更改尚未保存。放弃后无法恢复；已保存的草稿会保留。'),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text('继续编辑'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.pop(ctx, true),
-                  child: const Text('放弃更改'),
-                ),
-              ],
+      final confirmed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Text('放弃未保存的更改？'),
+          content: const Text('这些更改尚未保存。放弃后无法恢复；已保存的草稿会保留。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('继续编辑'),
             ),
-          ) ==
-          true;
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('放弃更改'),
+            ),
+          ],
+        ),
+      );
+      return _isCurrentSession(session) && confirmed == true;
     } finally {
       if (mounted) {
         setState(() => confirmingClose = false);
-        editorFocus.requestFocus();
+        if (_isCurrentSession(session)) editorFocus.requestFocus();
       }
     }
   }
 
   void close() {
+    if (!sessionAvailable) return;
     if (widget.onClose != null) {
       widget.onClose!();
     } else {
@@ -232,11 +286,13 @@ class ComposeEditorState extends State<ComposeEditor> {
   }
 
   Future<void> requestClose() async {
-    if (await canLeave() && mounted) close();
+    if (!sessionAvailable) return;
+    final session = _captureSession();
+    if (await canLeave() && _isCurrentSession(session)) close();
   }
 
   void viewUncertainStatus() {
-    if (busy || !sendUncertain) return;
+    if (!sessionAvailable || busy || !sendUncertain) return;
     close();
     widget.onViewStatus?.call();
   }
@@ -251,6 +307,7 @@ class ComposeEditorState extends State<ComposeEditor> {
       setState(() => error = '请输入有效收件人地址，多个地址用逗号分隔');
       return;
     }
+    final session = _captureSession();
     setState(() => confirmingSend = true);
     final confirmed = await showDialog<bool>(
       context: context,
@@ -273,33 +330,37 @@ class ComposeEditorState extends State<ComposeEditor> {
     );
     if (!mounted) return;
     setState(() => confirmingSend = false);
-    if (confirmed != true) return;
-    await act(() async {
-      await persist();
+    if (confirmed != true || !_isCurrentSession(session)) return;
+    await _act((session) async {
+      await _persist(session);
+      _requireCurrentSession(session);
       sendKey ??= 'send-${DateTime.now().microsecondsSinceEpoch}';
+      // Once submitted, a stale completion must never make this editor resendable.
+      // Only a current-session definite result may clear the uncertainty guard.
+      sendUncertain = true;
       try {
-        final result = await widget.api.request(
+        final result = await session.api.request(
           'POST',
           '/drafts/$id/send',
           key: sendKey,
           body: {'revision': revision},
         );
+        _requireCurrentSession(session);
+        sendUncertain = false;
         widget.onSaved('邮件已进入发件队列（${result['status']}），请在「发件状态」查看结果');
-        if (mounted) close();
+        if (_isCurrentSession(session)) close();
       } catch (e) {
+        if (!_isCurrentSession(session)) rethrow;
         if (e is ApiException &&
             (e.code == 'NETWORK' ||
                 e.code == 'INVALID_RESPONSE' ||
                 e.code.startsWith('HTTP_5'))) {
-          sendUncertain = true;
-          throw ApiException(
-            'SEND_UNCERTAIN',
-            '提交结果暂不确定。请通过下方按钮查看发件状态，不要重复发送。',
-          );
+          throw ApiException('SEND_UNCERTAIN', _sendUncertainMessage);
         }
+        sendUncertain = false;
         rethrow;
       }
-    });
+    }, session: session);
   }
 
   Widget fields() => Column(
@@ -420,11 +481,11 @@ class ComposeEditorState extends State<ComposeEditor> {
               fields()
             else
               Flexible(child: SingleChildScrollView(child: fields())),
-            if (error.isNotEmpty)
+            if (error.isNotEmpty || (sendUncertain && !busy))
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 child: Text(
-                  error,
+                  error.isNotEmpty ? error : _sendUncertainMessage,
                   style: const TextStyle(color: Colors.red, fontSize: 12),
                 ),
               ),
@@ -518,5 +579,6 @@ class ComposeDialog extends ComposeEditor {
     required super.maxBytes,
     required super.onSaved,
     super.onViewStatus,
+    super.captureSessionGuard,
   });
 }

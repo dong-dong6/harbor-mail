@@ -39,3 +39,55 @@ Tests exercise actual localhost HTTP for authentication, demo mail, optimistic r
 `TEST_DATABASE_URL=jdbc:postgresql://127.0.0.1:5432/mail_test TEST_DATABASE_USER=... TEST_DATABASE_PASSWORD=... mvn -Dtest=MailApiTest test`
 
 The test suite deletes its synthetic data. **Never point TEST_DATABASE_URL at a live mailbox database.** Production provider acceptance, Docker runtime and native client release builds remain separate acceptance gates.
+
+## Phase A device pairing (development)
+
+A signed-in password session can create a two-minute, one-time QR code. A native app claims it
+with its own S256 verifier, then both screens display a six-digit confirmation code. The browser
+owner must compare the codes and re-enter the current owner password. Approval grants the existing
+single-owner scope: full mail and settings access. A claimed device cannot create another pairing.
+The independent device bearer lasts at most eight hours and has no refresh token. Clients keep it
+in memory only. Restart persistence, biometric unlock and passkeys are outside this phase.
+
+Set `MAIL_ALLOWED_ORIGIN` to the exact reachable server origin, for example
+`https://mail.example.com` or `https://mail.example.com:8443`, without a trailing slash or path.
+Pairing appends `/api/v1`; it never trusts Host, Forwarded headers or a QR destination supplied in a
+request. HTTPS is mandatory outside explicit demo mode. Demo permits only configured loopback HTTP
+origins, which cannot be used by a separate physical phone to reach this machine. Invalid/missing
+pairing-origin configuration disables pairing with `PAIRING_UNAVAILABLE` without breaking login.
+
+Only the creating password session can inspect, approve or reject its pairing. Browser logout or
+expiry invalidates pending pairings; already redeemed device sessions remain independent. The
+owner's device list supports immediate, idempotent revocation of all tokens for one device. Device
+logout revokes that device's session. Approval-password failures return 403
+`REAUTHENTICATION_FAILED`; 401 still denotes a missing/invalid bearer on protected endpoints.
+
+Public pairing endpoints are only exact POST `/auth/device-pairings/claim`, `/poll`, and `/redeem`
+under `/api/v1`. Proof is required for every poll and redemption. App polling must be at least two
+seconds apart. Limits: 4 KiB JSON auth bodies; 120 public pairing requests per observed IP/minute;
+600 global/minute; five pending pairings per creator; 1,000 retained pairing rows; 100 active devices
+and 1,000 retained device rows. Old pairing records are pruned ten minutes after expiry and device
+records 24 hours after expiry during pairing creation. Password approval shares login's throttling.
+These conservative limits assume the existing single-replica deployment. No real device enrollment
+is performed by tests; `DevicePairingApiTest` runs synthetic localhost fixtures on H2 or an explicitly
+supplied disposable PostgreSQL database.
+
+## Passkeys (development, synthetic acceptance only)
+
+Standard WebAuthn endpoints are implemented under `/api/v1/auth/passkeys`. The server verifies
+registration and assertions with Yubico `webauthn-server-core` 2.10.1, including the 2026 credential
+ownership security fix. Existing owner browser bearer plus current password is required to add or
+remove a passkey. Discoverable credentials and user verification are required; successful assertions
+issue the same eight-hour owner session as password login. Password recovery remains available.
+
+Use the exact stable HTTPS `MAIL_ALLOWED_ORIGIN`; its hostname is the RP ID. Ports and subdomains are
+not interchangeable. Explicit demo mode supports `http://localhost:<port>` for disposable virtual
+authenticator testing; IP-address RP IDs are disabled. The optional `mail.passkeys.android-origins`
+property defaults empty and accepts only explicitly approved `android:apk-key-hash:` SHA-256 origins.
+Nothing automatically configures trusted Android certificates or publishes website asset links.
+See [Passkey contract](../docs/PASSKEY_CONTRACT.md) for configuration, security bounds and error codes.
+
+`PasskeyApiTest` uses temporary P-256 keys to exercise actual ES256 WebAuthn verification and failure
+cases over localhost HTTP, on H2 and disposable PostgreSQL. It never enrolls real authenticators.
+Removing a passkey prevents future sign-in but does not revoke existing sessions. No refresh token,
+private passkey export, or automatic real-device enrollment is provided.

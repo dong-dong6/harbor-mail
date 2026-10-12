@@ -30,7 +30,13 @@ class MailRoute {
         message = parts[1];
       } else if (parts.firstOrNull == 'settings' && parts.length <= 2) {
         settings = parts.length == 1 ? 'accounts' : parts[1];
-        if (!{'accounts', 'add', 'oauth'}.contains(settings)) {
+        if (!{
+          'accounts',
+          'add',
+          'oauth',
+          'devices',
+          'passkeys',
+        }.contains(settings)) {
           return const MailRoute();
         }
       } else if (uri.path != '/' && uri.path != '/mail') {

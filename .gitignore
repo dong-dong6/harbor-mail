@@ -23,3 +23,5 @@ test-results/
 client/tool/node_modules/
 
 server/src/main/resources/META-INF/public-web-assets.json
+
+server/src/main/resources/META-INF/android-download/

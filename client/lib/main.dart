@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:file_saver/file_saver.dart';
 
@@ -21,6 +23,17 @@ export 'account_settings.dart'
 import 'mail_header.dart';
 import 'mail_body.dart';
 import 'oauth_browser.dart';
+import 'device_settings.dart';
+import 'device_onboarding.dart';
+import 'device_pairing_api.dart';
+import 'server_profile.dart';
+import 'device_scanner.dart';
+import 'local_unlock.dart';
+import 'android_downloads.dart';
+import 'passkey_api.dart';
+import 'passkey_login.dart';
+import 'passkey_settings.dart';
+import 'server_profile_store.dart';
 
 void main() {
   configureBrowserNavigation();
@@ -33,49 +46,124 @@ const ink = Color(0xff24344c),
     canvas = Color(0xfff5f7fb);
 typedef Json = Map<String, dynamic>;
 
-class MailApp extends StatelessWidget {
+class MailApp extends StatefulWidget {
   final MailApi? api;
   final MailNavigation? navigation;
-  const MailApp({super.key, this.api, this.navigation});
+  final LocalUnlockController? unlockController;
+  const MailApp({super.key, this.api, this.navigation, this.unlockController});
+  @override
+  State<MailApp> createState() => _MailAppState();
+}
+
+/// Retire protected transient routes synchronously when a server session ends.
+/// Waiting for pop animations could reveal an old dialog after the lock lifts.
+class _SessionRouteObserver extends NavigatorObserver {
+  final List<Route<dynamic>> routes = [];
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    routes.add(route);
+  }
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    routes.remove(route);
+  }
+
+  @override
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    routes.remove(route);
+  }
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    final index = oldRoute == null ? -1 : routes.indexOf(oldRoute);
+    if (index >= 0) {
+      if (newRoute == null) {
+        routes.removeAt(index);
+      } else {
+        routes[index] = newRoute;
+      }
+    }
+  }
+
+  void clearTransientRoutes() {
+    for (final route in routes.skip(1).toList().reversed) {
+      navigator?.removeRoute(route);
+    }
+  }
+}
+
+class _MailAppState extends State<MailApp> {
+  final mailboxKey = GlobalKey<MailboxState>();
+  final sessionRoutes = _SessionRouteObserver();
+  late final initialApi = widget.api ?? MailApi();
+  late final unlock =
+      widget.unlockController ??
+      LocalUnlockController(authenticator: PlatformLocalUnlockAuthenticator());
+  @override
+  void dispose() {
+    if (widget.unlockController == null) unlock.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) => MaterialApp(
-        debugShowCheckedModeBanner: false,
-        title: '泊信 · Harbor Mail',
-        initialRoute: '/',
-        theme: ThemeData(
-          useMaterial3: true,
-          colorScheme:
-              ColorScheme.fromSeed(seedColor: blue, surface: Colors.white)
-                  .copyWith(
+    debugShowCheckedModeBanner: false,
+    title: '泊信 · Harbor Mail',
+    initialRoute: '/',
+    navigatorObservers: [sessionRoutes],
+    builder: (context, child) => LocalUnlockGate(
+      controller: unlock,
+      onSignOut: () => mailboxKey.currentState?.signoutFromLock(),
+      child: child ?? const SizedBox.shrink(),
+    ),
+    theme: ThemeData(
+      useMaterial3: true,
+      colorScheme: ColorScheme.fromSeed(seedColor: blue, surface: Colors.white)
+          .copyWith(
             primary: blue,
             primaryContainer: const Color(0xffc2e7ff),
             surfaceTint: Colors.transparent,
           ),
-          dialogTheme: const DialogThemeData(
-            backgroundColor: Colors.white,
-            surfaceTintColor: Colors.transparent,
-          ),
-          scaffoldBackgroundColor: canvas,
-          fontFamily: 'NotoSansSC',
-          textTheme: const TextTheme(bodyMedium: TextStyle(color: ink)),
-          inputDecorationTheme: InputDecorationTheme(
-            filled: true,
-            fillColor: canvas,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-              borderSide: BorderSide.none,
-            ),
-          ),
-          cardTheme: const CardThemeData(elevation: 0),
+      dialogTheme: const DialogThemeData(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+      ),
+      scaffoldBackgroundColor: canvas,
+      fontFamily: 'NotoSansSC',
+      textTheme: const TextTheme(bodyMedium: TextStyle(color: ink)),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: canvas,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: BorderSide.none,
         ),
-        home: Mailbox(api: api ?? MailApi(), navigation: navigation),
-      );
+      ),
+      cardTheme: const CardThemeData(elevation: 0),
+    ),
+    home: Mailbox(
+      key: mailboxKey,
+      api: initialApi,
+      navigation: widget.navigation,
+      localUnlock: unlock,
+      clearTransientRoutes: sessionRoutes.clearTransientRoutes,
+    ),
+  );
 }
 
 class Mailbox extends StatefulWidget {
   final MailApi api;
   final MailNavigation? navigation;
-  const Mailbox({super.key, required this.api, this.navigation});
+  final LocalUnlockController? localUnlock;
+  final VoidCallback? clearTransientRoutes;
+  const Mailbox({
+    super.key,
+    required this.api,
+    this.navigation,
+    this.localUnlock,
+    this.clearTransientRoutes,
+  });
   @override
   MailboxState createState() => MailboxState();
 }
@@ -85,13 +173,22 @@ class MailboxState extends State<Mailbox> {
   late MailRoute pendingRoute;
   bool applyingRoute = false;
   String settingsSection = 'accounts';
+  final deviceSettingsKey = GlobalKey<DeviceSettingsPageState>();
+  final passkeySettingsKey = GlobalKey<PasskeySettingsPanelState>();
+  final profileStore = ServerProfileStore();
+  MailApi? _configuredApi;
+  bool pairingOpen = false;
+  int sessionGeneration = 0, loginGeneration = 0;
+  Object? _composeDialogIdentity;
+  bool _wasLocked = false;
+  final serverAddress = TextEditingController();
   MailRoute get currentRoute => MailRoute(
-        messageId: selected?['id']?.toString(),
-        account: account,
-        folder: folder,
-        filter: filter,
-        settings: settingsOpen ? settingsSection : '',
-      );
+    messageId: selected?['id']?.toString(),
+    account: account,
+    folder: folder,
+    filter: filter,
+    settings: settingsOpen ? settingsSection : '',
+  );
   void publishRoute() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && logged && !applyingRoute) {
@@ -105,6 +202,7 @@ class MailboxState extends State<Mailbox> {
     String location, {
     bool restoringLogin = false,
   }) async {
+    if (widget.localUnlock?.locked ?? false) return false;
     final target = MailRoute.parse(location);
     if (!logged) {
       pendingRoute = target;
@@ -118,7 +216,8 @@ class MailboxState extends State<Mailbox> {
       debounce?.cancel();
       generation++;
       detailGeneration++;
-      final accountExists = target.account.isEmpty ||
+      final accountExists =
+          target.account.isEmpty ||
           accounts.any((a) => a['id'] == target.account);
       setState(() {
         account = accountExists ? target.account : '';
@@ -132,8 +231,9 @@ class MailboxState extends State<Mailbox> {
         loading = false;
         refreshing = false;
         settingsOpen = target.settings.isNotEmpty;
-        settingsSection =
-            target.settings.isEmpty ? 'accounts' : target.settings;
+        settingsSection = target.settings.isEmpty
+            ? 'accounts'
+            : target.settings;
         if (settingsSection == 'oauth' &&
             caps?['features']?['oauthSettings'] != true) {
           settingsSection = 'accounts';
@@ -193,6 +293,12 @@ class MailboxState extends State<Mailbox> {
   String acceptedSearch = '';
 
   Future<bool> canLeave() async {
+    final session = sessionGeneration;
+    if (logged && api.token == null) {
+      endSession(message: '登录已失效，请重新登录');
+      return false;
+    }
+    if (!isCurrentSession(session)) return false;
     if (guardingNavigation || composeOpen) return false;
     guardingNavigation = true;
     try {
@@ -201,10 +307,21 @@ class MailboxState extends State<Mailbox> {
         return false;
       }
       if (settingsOpen &&
+          settingsSection == 'devices' &&
+          !(await deviceSettingsKey.currentState?.canLeave() ?? true)) {
+        return false;
+      }
+      if (settingsOpen &&
+          settingsSection == 'passkeys' &&
+          !(await passkeySettingsKey.currentState?.canLeave() ?? true)) {
+        return false;
+      }
+      if (settingsOpen &&
+          !{'devices', 'passkeys'}.contains(settingsSection) &&
           !(await settingsKey.currentState?.canLeave() ?? true)) {
         return false;
       }
-      return mounted;
+      return isCurrentSession(session);
     } finally {
       guardingNavigation = false;
     }
@@ -277,6 +394,8 @@ class MailboxState extends State<Mailbox> {
   }
 
   Future<void> inlineCompose(Json mail, {bool forward = false}) async {
+    final session = sessionGeneration;
+    if (!isCurrentSession(session)) return;
     if (inlineReply != null &&
         !(await inlineComposeKey.currentState?.canLeave() ?? true)) {
       return;
@@ -285,7 +404,7 @@ class MailboxState extends State<Mailbox> {
     // Dispose an old editor before reusing its key so reply/forward fields reset.
     setState(() => inlineReply = null);
     await WidgetsBinding.instance.endOfFrame;
-    if (!mounted || selected?['id'] != mail['id']) return;
+    if (!isCurrentSession(session) || selected?['id'] != mail['id']) return;
     setState(() {
       inlineReply = mail;
       inlineForward = forward;
@@ -305,6 +424,12 @@ class MailboxState extends State<Mailbox> {
   @override
   void initState() {
     super.initState();
+    widget.localUnlock?.addListener(unlockChanged);
+    bindApiSession(widget.api);
+    serverAddress.text = widget.api.base.startsWith('https://')
+        ? widget.api.base
+        : '';
+    if (!kIsWeb) unawaited(restoreServerProfile());
     final oauthReturned = consumeOAuthReturn();
     pendingRoute = MailRoute.parse(navigation.location);
     navigation.listen(applyBrowserRoute);
@@ -315,27 +440,78 @@ class MailboxState extends State<Mailbox> {
           (inlineReply != null &&
               (editor == null || editor.dirty || editor.locked)) ||
           (settingsOpen &&
-              (settingsKey.currentState?.protectsDocumentExit ?? true));
+              (settingsSection == 'devices'
+                  ? deviceSettingsKey.currentState?.protectsDocumentExit ?? true
+                  : settingsSection == 'passkeys'
+                  ? passkeySettingsKey.currentState?.protectsDocumentExit ??
+                        true
+                  : settingsKey.currentState?.protectsDocumentExit ?? true));
     });
     if (oauthReturned) {
       error = '邮箱已连接。原登录窗口不可用，请重新登录查看账户。';
     }
   }
 
-  MailApi get api => widget.api;
+  bool isSameSession(int epoch) =>
+      mounted && logged && epoch == sessionGeneration;
+
+  bool isCurrentSession(int epoch) =>
+      mounted &&
+      logged &&
+      api.token != null &&
+      epoch == sessionGeneration &&
+      !(widget.localUnlock?.locked ?? false);
+
+  bool Function() captureSessionGuard() {
+    final epoch = sessionGeneration;
+    return () => isCurrentSession(epoch);
+  }
+
+  void unlockChanged() {
+    final locked = widget.localUnlock?.locked ?? false;
+    if (locked && !_wasLocked) {
+      sessionGeneration++;
+      generation++;
+      detailGeneration++;
+      loading = false;
+      refreshing = false;
+      actionBusy = false;
+    }
+    _wasLocked = locked;
+    if (!locked && logged && api.token == null) {
+      endSession(message: '登录已失效，请重新登录');
+      return;
+    }
+    if (mounted) setState(() {});
+  }
+
+  void bindApiSession(MailApi source) {
+    source.onSessionCleared = () {
+      if (mounted && logged && identical(source, api)) {
+        endSession(message: '登录已失效，请重新登录');
+      }
+    };
+  }
+
+  MailApi get api => _configuredApi ?? widget.api;
   List<Json> rows(dynamic value) =>
       (value as List? ?? []).map((e) => Map<String, dynamic>.from(e)).toList();
   @override
   void dispose() {
+    widget.localUnlock?.removeListener(unlockChanged);
     navigation.dispose();
     poll?.cancel();
     debounce?.cancel();
     listScroll.dispose();
     detailScroll.dispose();
+    serverAddress.dispose();
     username.dispose();
     password.dispose();
     search.dispose();
+    api.onSessionCleared = null;
+    widget.api.onSessionCleared = null;
     api.dispose();
+    if (_configuredApi != null) widget.api.dispose();
     super.dispose();
   }
 
@@ -353,23 +529,126 @@ class MailboxState extends State<Mailbox> {
     }
   }
 
+  Future<void> restoreServerProfile() async {
+    final before = serverAddress.text;
+    try {
+      final saved = await profileStore.load();
+      if (!mounted ||
+          busy ||
+          logged ||
+          pairingOpen ||
+          saved == null ||
+          serverAddress.text != before ||
+          username.text.isNotEmpty) {
+        return;
+      }
+      setState(() {
+        serverAddress.text = saved.profile.apiBase;
+        username.text = saved.accountLabel;
+      });
+    } catch (_) {
+      // Connection hints are optional; platform storage failure never signs in.
+    }
+  }
+
+  Future<MailApi> prepareLoginApi() async {
+    if (!kIsWeb && serverAddress.text.trim().isNotEmpty) {
+      final profile = ServerProfile.parse(serverAddress.text.trim());
+      if (api.base != profile.apiBase) {
+        _configuredApi?.dispose();
+        widget.api.token = null;
+        _configuredApi = MailApi(base: profile.apiBase);
+        bindApiSession(_configuredApi!);
+      }
+    }
+    return api;
+  }
+
+  Future<void> rememberServerProfile() async {
+    if (kIsWeb) return;
+    try {
+      await profileStore.save(
+        ServerProfile.parse(api.base),
+        accountLabel: username.text.trim(),
+      );
+    } catch (_) {
+      // No token is stored. Failure only removes next-launch convenience.
+    }
+  }
+
+  void acceptPasskeySession(MailApi candidate, PasskeySession session) {
+    if (!mounted || logged || pairingOpen || !identical(api, candidate)) return;
+    candidate.token = session.accessToken;
+    username.text = session.accountName;
+    password.clear();
+    unawaited(resumeAuthenticatedSession().catchError(fail));
+  }
+
   Future<void> login() async {
     if (busy) return;
     setState(() => busy = true);
     try {
+      await prepareLoginApi();
       await api.login(username.text.trim(), password.text);
       password.clear();
-      final resume = pendingRoute;
-      applyingRoute = true;
-      setState(() => logged = true);
+      await resumeAuthenticatedSession();
+    } catch (e) {
+      fail(e);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> resumeAuthenticatedSession() async {
+    if (!mounted || api.token == null) return;
+    final session = ++sessionGeneration;
+    loginGeneration++;
+    unawaited(rememberServerProfile());
+    widget.localUnlock?.attachSession(Object());
+    final resume = pendingRoute;
+    applyingRoute = true;
+    setState(() => logged = true);
+    try {
       await refresh();
+    } finally {
       applyingRoute = false;
-      await applyBrowserRoute(resume.location, restoringLogin: true);
-      poll = Timer.periodic(const Duration(seconds: 30), (_) {
-        if (!loading && !actionBusy && !applyingRoute && !settingsOpen) {
-          refresh(silent: true);
-        }
-      });
+    }
+    if (!isCurrentSession(session)) return;
+    await applyBrowserRoute(resume.location, restoringLogin: true);
+    poll?.cancel();
+    poll = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!loading &&
+          !actionBusy &&
+          !applyingRoute &&
+          !settingsOpen &&
+          !(widget.localUnlock?.locked ?? false)) {
+        refresh(silent: true);
+      }
+    });
+  }
+
+  Future<void> acceptPairedDevice(
+    ServerProfile profile,
+    DevicePairingResult result,
+  ) async {
+    if (!mounted || !pairingOpen || logged) {
+      result.api.dispose();
+      return;
+    }
+    _configuredApi?.dispose();
+    widget.api.token = null;
+    _configuredApi = result.api;
+    bindApiSession(result.api);
+    serverAddress.text = profile.apiBase;
+    username.text = result.accountName;
+    password.clear();
+    setState(() {
+      pairingOpen = false;
+      busy = true;
+      error = '';
+    });
+    try {
+      await resumeAuthenticatedSession();
     } catch (e) {
       fail(e);
     } finally {
@@ -384,7 +663,10 @@ class MailboxState extends State<Mailbox> {
   }
 
   Future<void> refresh({bool silent = false, bool append = false}) async {
-    if (!logged || !mounted || (append && loading) || (silent && refreshing)) {
+    final session = sessionGeneration;
+    if (!isCurrentSession(session) ||
+        (append && loading) ||
+        (silent && refreshing)) {
       return;
     }
     final gen = ++generation;
@@ -400,11 +682,12 @@ class MailboxState extends State<Mailbox> {
     try {
       if (!append) {
         nextAccounts = rows((await api.request('GET', '/accounts'))['items']);
+        if (!isCurrentSession(session) || gen != generation) return;
         nextCaps = Map<String, dynamic>.from(
           await api.request('GET', '/settings/capabilities'),
         );
       }
-      if (!mounted || gen != generation) return;
+      if (!isCurrentSession(session) || gen != generation) return;
       if (requestAccount.isNotEmpty &&
           !nextAccounts.any((a) => a['id'] == requestAccount)) {
         requestAccount = '';
@@ -436,7 +719,7 @@ class MailboxState extends State<Mailbox> {
             if (nextCursor != null) 'cursor': nextCursor,
           },
         );
-        if (!mounted || gen != generation) return;
+        if (!isCurrentSession(session) || gen != generation) return;
         fetched.addAll(rows(data['items']));
         nextCoverage = data['coverage'] ?? '';
         hasMore = data['hasMore'] == true;
@@ -462,9 +745,9 @@ class MailboxState extends State<Mailbox> {
         error = '';
       });
     } catch (e) {
-      if (gen == generation) fail(e);
+      if (isSameSession(session) && gen == generation) fail(e);
     } finally {
-      if (mounted && gen == generation) {
+      if (isCurrentSession(session) && gen == generation) {
         setState(() {
           loading = false;
           refreshing = false;
@@ -475,6 +758,7 @@ class MailboxState extends State<Mailbox> {
 
   Future<void> chooseAccount(String id) async {
     if (!await canLeave() || !mounted) return;
+    final session = sessionGeneration;
     scaffoldKey.currentState?.closeDrawer();
     setState(() {
       account = id;
@@ -486,28 +770,30 @@ class MailboxState extends State<Mailbox> {
     if (id.isNotEmpty) {
       try {
         final data = await api.request('GET', '/accounts/$id/folders');
-        if (mounted && account == id) {
+        if (isCurrentSession(session) && account == id) {
           setState(() => folders = rows(data['items']));
         }
       } catch (e) {
-        if (mounted && account == id) fail(e);
+        if (isSameSession(session) && account == id) fail(e);
       }
     }
   }
 
   Future<void> open(Json mail, {bool guarded = true}) async {
     if (guarded && (!await canLeave() || !mounted)) return;
+    final session = sessionGeneration;
+    if (!isCurrentSession(session)) return;
     inlineReply = null;
     if (detailScroll.hasClients) detailScroll.jumpTo(0);
     final gen = ++detailGeneration;
     setState(() => selected = {...mail, '_loading': true});
     try {
       final data = await api.request('GET', '/messages/${mail['id']}');
-      if (mounted && gen == detailGeneration) {
+      if (isCurrentSession(session) && gen == detailGeneration) {
         setState(() => selected = Map<String, dynamic>.from(data));
       }
     } catch (e) {
-      if (mounted && gen == detailGeneration) {
+      if (isSameSession(session) && gen == detailGeneration) {
         fail(e);
         setState(() => selected = {...mail, '_error': true});
       }
@@ -522,6 +808,8 @@ class MailboxState extends State<Mailbox> {
         !mounted) {
       return;
     }
+    final session = sessionGeneration;
+    if (!isCurrentSession(session)) return;
     setState(() => actionBusy = true);
     final item = selected!;
     final detailGen = detailGeneration;
@@ -537,59 +825,68 @@ class MailboxState extends State<Mailbox> {
           if (value != null) 'value': value,
         },
       );
+      if (!isCurrentSession(session)) return;
       var state = result['status'];
-      for (var n = 0;
-          n < 20 &&
-              ![
-                'SUCCEEDED',
-                'COMPLETED',
-                'APPLIED',
-                'FAILED',
-                'UNKNOWN',
-              ].contains(state);
-          n++) {
+      for (
+        var n = 0;
+        n < 20 &&
+            ![
+              'SUCCEEDED',
+              'COMPLETED',
+              'APPLIED',
+              'FAILED',
+              'UNKNOWN',
+            ].contains(state);
+        n++
+      ) {
         await Future<void>.delayed(const Duration(milliseconds: 500));
+        if (!isCurrentSession(session)) return;
         state = (await api.request(
           'GET',
           '/commands/${result['id']}',
         ))['status'];
       }
+      if (!isCurrentSession(session)) return;
       notify(
         state == 'FAILED'
             ? '操作失败，请刷新后重试'
             : state == 'UNKNOWN'
-                ? '结果待核实，请勿重复提交'
-                : '操作状态：$state',
+            ? '结果待核实，请勿重复提交'
+            : '操作状态：$state',
       );
       await refresh(silent: true);
-      if (detailGen != detailGeneration) return;
+      if (!isCurrentSession(session) || detailGen != detailGeneration) return;
       if (['TRASH', 'ARCHIVE', 'RESTORE'].contains(type)) {
         if (mounted) setState(closeMessage);
       } else {
         await open(item, guarded: false);
       }
     } catch (e) {
-      fail(e);
+      if (isSameSession(session)) fail(e);
     } finally {
-      if (mounted) setState(() => actionBusy = false);
+      if (isCurrentSession(session)) setState(() => actionBusy = false);
     }
   }
 
   Future<void> sync() async {
     if (actionBusy) return;
+    final session = sessionGeneration;
+    if (!isCurrentSession(session)) return;
     setState(() => actionBusy = true);
     try {
       for (final a in accounts.where(
         (a) => account.isEmpty || a['id'] == account,
       )) {
+        if (!isCurrentSession(session)) return;
         await api.request('POST', '/accounts/${a['id']}/sync');
       }
+      if (!isCurrentSession(session)) return;
       notify('同步任务已提交，列表会定期刷新');
       await refresh();
     } catch (e) {
-      fail(e);
+      if (isSameSession(session)) fail(e);
     } finally {
-      if (mounted) setState(() => actionBusy = false);
+      if (isCurrentSession(session)) setState(() => actionBusy = false);
     }
   }
 
@@ -599,14 +896,19 @@ class MailboxState extends State<Mailbox> {
       await settings();
       return;
     }
+    final session = sessionGeneration;
+    if (!isCurrentSession(session)) return;
     setState(() => inlineReply = null);
     composeOpen = true;
+    final dialogIdentity = Object();
+    _composeDialogIdentity = dialogIdentity;
     try {
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
         builder: (_) => ComposeDialog(
           api: api,
+          captureSessionGuard: captureSessionGuard,
           accounts: accounts,
           initialAccountId: account,
           reply: reply,
@@ -618,17 +920,23 @@ class MailboxState extends State<Mailbox> {
         ),
       );
     } finally {
-      composeOpen = false;
+      if (identical(_composeDialogIdentity, dialogIdentity)) {
+        composeOpen = false;
+        _composeDialogIdentity = null;
+      }
     }
-    refresh(silent: true);
+    if (isCurrentSession(session)) refresh(silent: true);
   }
 
   Future<void> showDrafts() async {
     if (!await canLeave() || !mounted) return;
+    final session = sessionGeneration;
+    final login = loginGeneration;
+    if (!isCurrentSession(session)) return;
     setState(() => inlineReply = null);
     try {
       final drafts = rows((await api.request('GET', '/drafts'))['items']);
-      if (!mounted) return;
+      if (!isCurrentSession(session)) return;
       showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -650,6 +958,11 @@ class MailboxState extends State<Mailbox> {
                             subtitle: Text(d['updatedAt'] ?? ''),
                             trailing: const Icon(Icons.chevron_right),
                             onTap: () {
+                              if (!mounted ||
+                                  !logged ||
+                                  login != loginGeneration ||
+                                  (widget.localUnlock?.locked ?? false))
+                                return;
                               Navigator.pop(ctx);
                               compose(draft: d);
                             },
@@ -667,20 +980,23 @@ class MailboxState extends State<Mailbox> {
         ),
       );
     } catch (e) {
-      fail(e);
+      if (isSameSession(session)) fail(e);
     }
   }
 
   Future<void> outbox() async {
-    if (!mounted) return;
+    if (!isCurrentSession(sessionGeneration)) return;
     showDialog<void>(
       context: context,
-      builder: (_) => OutboxDialog(api: api),
+      builder: (_) =>
+          OutboxDialog(api: api, captureSessionGuard: captureSessionGuard),
     );
   }
 
   Future<void> settings({String section = 'accounts'}) async {
-    if (settingsOpen) {
+    if (settingsOpen &&
+        !{'devices', 'passkeys'}.contains(settingsSection) &&
+        !{'devices', 'passkeys'}.contains(section)) {
       if (settingsKey.currentState?.section != section) {
         await settingsKey.currentState?.showSection(section);
       }
@@ -693,7 +1009,7 @@ class MailboxState extends State<Mailbox> {
       settingsSection = section;
       settingsOpen = true;
     });
-    if (section != 'accounts') {
+    if (!{'accounts', 'devices', 'passkeys'}.contains(section)) {
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => settingsKey.currentState?.showSection(section),
       );
@@ -702,15 +1018,45 @@ class MailboxState extends State<Mailbox> {
 
   Future<void> signout() async {
     if (!await canLeave() || !mounted) return;
+    signoutFromLock();
+  }
+
+  Future<void> downloadAttachment(
+    Json attachment, {
+    Future<void> Function(String, Uint8List)? save,
+  }) async {
+    final session = sessionGeneration;
+    if (!isCurrentSession(session)) return;
     try {
-      await api.request('POST', '/auth/logout');
+      final bytes = await api.download(attachment['id'].toString());
+      if (!isCurrentSession(session)) return;
+      final name = (attachment['fileName'] ?? 'attachment').toString()
+          .replaceAll(RegExp(r'[\\/\x00-\x1F]'), '_');
+      if (save != null) {
+        await save(name, bytes);
+      } else {
+        await FileSaver.instance.saveFile(name: name, bytes: bytes);
+      }
     } catch (e) {
-      notify('服务器登出未确认；本机登录信息已清除');
+      if (isCurrentSession(session)) notify(e.toString());
     }
+  }
+
+  void signoutFromLock() {
+    // The gate obtained explicit discard confirmation outside the protected
+    // Navigator. Clear immediately even if the server is temporarily offline.
+    final request = api.request('POST', '/auth/logout');
     endSession();
+    unawaited(request.then<void>((_) {}, onError: (_) {}));
   }
 
   void endSession({String message = ''}) {
+    sessionGeneration++;
+    loginGeneration++;
+    _composeDialogIdentity = null;
+    logged = false;
+    widget.clearTransientRoutes?.call();
+    widget.localUnlock?.attachSession(null);
     api.token = null;
     poll?.cancel();
     debounce?.cancel();
@@ -720,6 +1066,10 @@ class MailboxState extends State<Mailbox> {
     if (!mounted) return;
     setState(() {
       logged = false;
+      actionBusy = false;
+      composeOpen = false;
+      applyingRoute = false;
+      pairingOpen = false;
       settingsOpen = false;
       acceptedSearch = '';
       loading = false;
@@ -741,6 +1091,17 @@ class MailboxState extends State<Mailbox> {
 
   @override
   Widget build(BuildContext context) {
+    if (!logged && pairingOpen) {
+      return DeviceOnboardingPage(
+        onConnected: acceptPairedDevice,
+        onClose: () => setState(() => pairingOpen = false),
+        scanPairingCode: supportsDeviceScanner
+            ? () => Navigator.of(context).push<String>(
+                MaterialPageRoute(builder: (_) => const DeviceScannerPage()),
+              )
+            : null,
+      );
+    }
     if (!logged) return loginView();
     publishRoute();
     return Shortcuts(
@@ -814,7 +1175,31 @@ class MailboxState extends State<Mailbox> {
                                       borderRadius: BorderRadius.circular(14),
                                       child: Material(
                                         color: Colors.white,
-                                        child: settingsOpen
+                                        child:
+                                            settingsOpen &&
+                                                settingsSection == 'passkeys'
+                                            ? PasskeySettingsPanel(
+                                                key: passkeySettingsKey,
+                                                api: api,
+                                                onClose: () => setState(
+                                                  () => settingsOpen = false,
+                                                ),
+                                              )
+                                            : settingsOpen &&
+                                                  settingsSection == 'devices'
+                                            ? DeviceSettingsPage(
+                                                key: deviceSettingsKey,
+                                                api: api,
+                                                onClose: () {
+                                                  setState(
+                                                    () => settingsOpen = false,
+                                                  );
+                                                  if (api.token == null) {
+                                                    endSession();
+                                                  }
+                                                },
+                                              )
+                                            : settingsOpen
                                             ? AccountSettingsPage(
                                                 key: settingsKey,
                                                 initialSection: settingsSection,
@@ -835,10 +1220,10 @@ class MailboxState extends State<Mailbox> {
                                                 },
                                               )
                                             : accounts.isEmpty && !loading
-                                                ? onboarding()
-                                                : selected == null
-                                                    ? messageList()
-                                                    : detail(true),
+                                            ? onboarding()
+                                            : selected == null
+                                            ? messageList()
+                                            : detail(true),
                                       ),
                                     ),
                                   ),
@@ -860,79 +1245,127 @@ class MailboxState extends State<Mailbox> {
   }
 
   Widget loginView() => Scaffold(
-        body: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 410),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Icon(
-                    Icons.mark_email_unread_rounded,
-                    size: 44,
-                    color: blue,
-                  ),
-                  const SizedBox(height: 24),
-                  const Text(
-                    '泊信',
-                    style: TextStyle(
-                      fontSize: 36,
-                      fontWeight: FontWeight.w700,
-                      color: ink,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '你的邮箱，一个安静的地方。',
-                    style: TextStyle(fontSize: 17, color: muted),
-                  ),
-                  const SizedBox(height: 36),
-                  const Text(
-                    '登录你的私人邮件服务器',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: username,
-                    autofillHints: const [AutofillHints.username],
-                    decoration: const InputDecoration(labelText: '用户名'),
-                    onSubmitted: (_) => login(),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: password,
-                    obscureText: true,
-                    autofillHints: const [AutofillHints.password],
-                    decoration: const InputDecoration(labelText: '密码'),
-                    onSubmitted: (_) => login(),
-                  ),
-                  if (error.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: Text(error,
-                          style: const TextStyle(color: Colors.red)),
-                    ),
-                  const SizedBox(height: 20),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 48,
-                    child: FilledButton(
-                      onPressed: busy ? null : login,
-                      child: Text(busy ? '正在连接…' : '登录'),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  const Text(
-                    '连接由你掌控的服务器。登录凭证仅保存在本次会话内；刷新或关闭后需重新登录。',
-                    style: TextStyle(fontSize: 12, color: muted, height: 1.6),
-                  ),
-                ],
+    body: Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 410),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(
+                Icons.mark_email_unread_rounded,
+                size: 44,
+                color: blue,
               ),
-            ),
+              const SizedBox(height: 24),
+              const Text(
+                '泊信',
+                style: TextStyle(
+                  fontSize: 36,
+                  fontWeight: FontWeight.w700,
+                  color: ink,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                '你的邮箱，一个安静的地方。',
+                style: TextStyle(fontSize: 17, color: muted),
+              ),
+              const SizedBox(height: 36),
+              const Text(
+                '登录你的私人邮件服务器',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: username,
+                autofillHints: const [AutofillHints.username],
+                decoration: const InputDecoration(labelText: '用户名'),
+                onSubmitted: (_) => login(),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: password,
+                obscureText: true,
+                autofillHints: const [AutofillHints.password],
+                decoration: const InputDecoration(labelText: '密码'),
+                onSubmitted: (_) => login(),
+              ),
+              if (!kIsWeb) ...[
+                const SizedBox(height: 12),
+                TextField(
+                  key: const Key('server-address'),
+                  controller: serverAddress,
+                  enabled: !busy,
+                  keyboardType: TextInputType.url,
+                  autocorrect: false,
+                  onChanged: (_) => setState(() {}),
+                  decoration: const InputDecoration(
+                    labelText: '服务器 URL',
+                    hintText: 'https://mail.example.com/api/v1',
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (error.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(error, style: const TextStyle(color: Colors.red)),
+                ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: FilledButton(
+                  onPressed: busy ? null : login,
+                  child: Text(busy ? '正在连接…' : '登录'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              PasskeyLoginButton(
+                acquireApi: prepareLoginApi,
+                enabled: !busy,
+                contextKey: serverAddress.text,
+                isCurrent: () => mounted && !logged && !pairingOpen,
+                onBusyChanged: (value) {
+                  if (mounted) setState(() => busy = value);
+                },
+                onAuthenticated: acceptPasskeySession,
+              ),
+              if (!kIsWeb) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    key: const Key('pair-device'),
+                    onPressed: busy
+                        ? null
+                        : () => setState(() {
+                            password.clear();
+                            error = '';
+                            pairingOpen = true;
+                          }),
+                    icon: const Icon(Icons.qr_code_scanner),
+                    label: const Text('扫描网页二维码，配置并登录'),
+                  ),
+                ),
+              ],
+              if (kIsWeb) ...[
+                const SizedBox(height: 16),
+                AndroidDownloadCard(client: api.client),
+              ],
+              const SizedBox(height: 24),
+              const Text(
+                '连接由你掌控的服务器。登录凭证仅保存在本次会话内；刷新或关闭后需重新登录。',
+                style: TextStyle(fontSize: 12, color: muted, height: 1.6),
+              ),
+            ],
           ),
         ),
-      );
+      ),
+    ),
+  );
   String accountLabel(Json a) {
     final name = a['displayName']?.toString().trim() ?? '';
     return name.isEmpty ? a['email']?.toString() ?? '邮箱' : name;
@@ -962,8 +1395,8 @@ class MailboxState extends State<Mailbox> {
     final subtitle = a == null
         ? null
         : label.toLowerCase() == email.toLowerCase()
-            ? providerLabel(a)
-            : email;
+        ? providerLabel(a)
+        : email;
     return Padding(
       padding: const EdgeInsets.only(bottom: 3),
       child: ListTile(
@@ -1021,144 +1454,153 @@ class MailboxState extends State<Mailbox> {
   }
 
   Widget sidebar() => Material(
-        color: canvas,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 14, 12, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Padding(
-                padding: EdgeInsets.fromLTRB(14, 0, 0, 15),
-                child: Row(
+    color: canvas,
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(12, 14, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(14, 0, 0, 15),
+            child: Row(
+              children: [
+                Icon(Icons.mark_email_unread_outlined, color: blue, size: 30),
+                SizedBox(width: 11),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.mark_email_unread_outlined,
-                        color: blue, size: 30),
-                    SizedBox(width: 11),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '泊信',
-                          style: TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        Text(
-                          'HARBOR MAIL',
-                          style: TextStyle(
-                            fontSize: 8,
-                            letterSpacing: 2,
-                            color: muted,
-                          ),
-                        ),
-                      ],
+                    Text(
+                      '泊信',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    Text(
+                      'HARBOR MAIL',
+                      style: TextStyle(
+                        fontSize: 8,
+                        letterSpacing: 2,
+                        color: muted,
+                      ),
                     ),
                   ],
                 ),
+              ],
+            ),
+          ),
+          SizedBox(
+            height: 50,
+            child: FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xffcee4fb),
+                foregroundColor: ink,
+                padding: const EdgeInsets.symmetric(horizontal: 22),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(15),
+                ),
               ),
-              SizedBox(
-                height: 50,
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xffcee4fb),
-                    foregroundColor: ink,
-                    padding: const EdgeInsets.symmetric(horizontal: 22),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(15),
+              onPressed: () => compose(),
+              icon: const Icon(Icons.edit_outlined, size: 21),
+              label: const Text('写邮件'),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.zero,
+              children: [
+                Row(
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(left: 12),
+                      child: Text(
+                        '邮箱',
+                        style: TextStyle(fontSize: 11, color: muted),
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      tooltip: '连接邮箱',
+                      onPressed: () => settings(section: 'add'),
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.add, size: 18),
+                    ),
+                  ],
+                ),
+                accountTile(null),
+                ...accounts.map(accountTile),
+                if (accounts.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    child: TextButton(
+                      onPressed: settings,
+                      child: const Text('连接邮箱'),
                     ),
                   ),
-                  onPressed: () => compose(),
-                  icon: const Icon(Icons.edit_outlined, size: 21),
-                  label: const Text('写邮件'),
+                const Divider(
+                  height: 24,
+                  indent: 12,
+                  endIndent: 12,
+                  color: Color(0xffe3e9f1),
                 ),
-              ),
-              const SizedBox(height: 12),
-              Expanded(
-                child: ListView(
-                  padding: EdgeInsets.zero,
-                  children: [
-                    Row(
-                      children: [
-                        const Padding(
-                          padding: EdgeInsets.only(left: 12),
-                          child: Text(
-                            '邮箱',
-                            style: TextStyle(fontSize: 11, color: muted),
-                          ),
-                        ),
-                        const Spacer(),
-                        IconButton(
-                          tooltip: '连接邮箱',
-                          onPressed: () => settings(section: 'add'),
-                          visualDensity: VisualDensity.compact,
-                          icon: const Icon(Icons.add, size: 18),
-                        ),
-                      ],
+                nav('收件箱', Icons.inbox_outlined, 'INBOX'),
+                nav('星标邮件', Icons.star_border_rounded, 'STARRED'),
+                nav('已发送', Icons.send_outlined, 'SENT'),
+                sidebarAction('草稿箱', Icons.drafts_outlined, showDrafts),
+                nav('归档', Icons.archive_outlined, 'ARCHIVE'),
+                nav('废纸篓', Icons.delete_outline, 'TRASH'),
+                sidebarAction('发件状态', Icons.outbox_outlined, outbox),
+                if (folders.isNotEmpty) ...[
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(12, 16, 0, 6),
+                    child: Text(
+                      '账户文件夹',
+                      style: TextStyle(fontSize: 11, color: muted),
                     ),
-                    accountTile(null),
-                    ...accounts.map(accountTile),
-                    if (accounts.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        child: TextButton(
-                          onPressed: settings,
-                          child: const Text('连接邮箱'),
-                        ),
+                  ),
+                  ...folders.map(
+                    (f) => ListTile(
+                      dense: true,
+                      minTileHeight: 36,
+                      leading: const Icon(Icons.folder_outlined, size: 18),
+                      title: Text(
+                        f['name'] ?? '',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12),
                       ),
-                    const Divider(
-                      height: 24,
-                      indent: 12,
-                      endIndent: 12,
-                      color: Color(0xffe3e9f1),
+                      trailing: Text(
+                        '${f['unreadCount'] ?? 0}',
+                        style: const TextStyle(fontSize: 10, color: muted),
+                      ),
+                      onTap: () => chooseFolder(f['role'] ?? f['id']),
                     ),
-                    nav('收件箱', Icons.inbox_outlined, 'INBOX'),
-                    nav('星标邮件', Icons.star_border_rounded, 'STARRED'),
-                    nav('已发送', Icons.send_outlined, 'SENT'),
-                    sidebarAction('草稿箱', Icons.drafts_outlined, showDrafts),
-                    nav('归档', Icons.archive_outlined, 'ARCHIVE'),
-                    nav('废纸篓', Icons.delete_outline, 'TRASH'),
-                    sidebarAction('发件状态', Icons.outbox_outlined, outbox),
-                    if (folders.isNotEmpty) ...[
-                      const Padding(
-                        padding: EdgeInsets.fromLTRB(12, 16, 0, 6),
-                        child: Text(
-                          '账户文件夹',
-                          style: TextStyle(fontSize: 11, color: muted),
-                        ),
-                      ),
-                      ...folders.map(
-                        (f) => ListTile(
-                          dense: true,
-                          minTileHeight: 36,
-                          leading: const Icon(Icons.folder_outlined, size: 18),
-                          title: Text(
-                            f['name'] ?? '',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          trailing: Text(
-                            '${f['unreadCount'] ?? 0}',
-                            style: const TextStyle(fontSize: 10, color: muted),
-                          ),
-                          onTap: () => chooseFolder(f['role'] ?? f['id']),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              const Divider(height: 12, color: Color(0xffe3e9f1)),
-              sidebarAction('账户与设置', Icons.settings_outlined, settings),
-              sidebarAction('退出登录', Icons.logout, signout),
-            ],
+                  ),
+                ],
+              ],
+            ),
           ),
-        ),
-      );
+          const Divider(height: 12, color: Color(0xffe3e9f1)),
+          sidebarAction('账户与设置', Icons.settings_outlined, settings),
+          sidebarAction(
+            '设备与登录',
+            Icons.devices_outlined,
+            () => settings(section: 'devices'),
+          ),
+          sidebarAction(
+            '通行密钥',
+            Icons.key_outlined,
+            () => settings(section: 'passkeys'),
+          ),
+          sidebarAction('退出登录', Icons.logout, signout),
+        ],
+      ),
+    ),
+  );
 
   Widget sidebarAction(String label, IconData icon, VoidCallback action) =>
       ListTile(
@@ -1172,102 +1614,124 @@ class MailboxState extends State<Mailbox> {
       );
 
   Widget mobileAccounts() => SizedBox(
-        height: 48,
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-          children: [
-            for (final a in <Json?>[null, ...accounts])
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: ChoiceChip(
-                  key: ValueKey('mobile-account-${a?['id'] ?? ''}'),
-                  label: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 160),
-                    child: Text(
-                      a == null ? '全部账户' : accountLabel(a),
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                  selected: account == (a?['id'] ?? ''),
-                  onSelected: (_) => chooseAccount(a?['id'] ?? ''),
+    height: 48,
+    child: ListView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+      children: [
+        for (final a in <Json?>[null, ...accounts])
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              key: ValueKey('mobile-account-${a?['id'] ?? ''}'),
+              label: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 160),
+                child: Text(
+                  a == null ? '全部账户' : accountLabel(a),
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12),
                 ),
               ),
-            ActionChip(
-              label: const Text('连接邮箱'),
-              onPressed: () => settings(section: 'add'),
-              avatar: const Icon(Icons.add, size: 16),
-            ),
-          ],
-        ),
-      );
-
-  Widget nav(String label, IconData icon, String id) => Padding(
-        padding: const EdgeInsets.only(bottom: 1),
-        child: ListTile(
-          dense: true,
-          minTileHeight: 36,
-          horizontalTitleGap: 12,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 14),
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-          selected: folder == id,
-          selectedTileColor: const Color(0xffd3e3fd),
-          selectedColor: ink,
-          leading: Icon(icon, size: 18),
-          title: Text(
-            label,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: folder == id ? FontWeight.w600 : FontWeight.w400,
+              selected: account == (a?['id'] ?? ''),
+              onSelected: (_) => chooseAccount(a?['id'] ?? ''),
             ),
           ),
-          onTap: () => chooseFolder(id),
+        ActionChip(
+          label: const Text('连接邮箱'),
+          onPressed: () => settings(section: 'add'),
+          avatar: const Icon(Icons.add, size: 16),
         ),
-      );
+      ],
+    ),
+  );
+
+  Widget nav(String label, IconData icon, String id) => Padding(
+    padding: const EdgeInsets.only(bottom: 1),
+    child: ListTile(
+      dense: true,
+      minTileHeight: 36,
+      horizontalTitleGap: 12,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      selected: folder == id,
+      selectedTileColor: const Color(0xffd3e3fd),
+      selectedColor: ink,
+      leading: Icon(icon, size: 18),
+      title: Text(
+        label,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: folder == id ? FontWeight.w600 : FontWeight.w400,
+        ),
+      ),
+      onTap: () => chooseFolder(id),
+    ),
+  );
 
   Widget topbar(bool menu) => Container(
-        height: 72,
-        padding: EdgeInsets.symmetric(horizontal: menu ? 8 : 18),
-        color: canvas,
-        child: Row(
-          children: [
-            if (menu)
-              IconButton(
-                tooltip: '打开导航',
-                onPressed: () => scaffoldKey.currentState?.openDrawer(),
-                icon: const Icon(Icons.menu),
+    height: 72,
+    padding: EdgeInsets.symmetric(horizontal: menu ? 8 : 18),
+    color: canvas,
+    child: Row(
+      children: [
+        if (menu)
+          IconButton(
+            tooltip: '打开导航',
+            onPressed: () => scaffoldKey.currentState?.openDrawer(),
+            icon: const Icon(Icons.menu),
+          ),
+        Expanded(
+          child: TextField(
+            controller: search,
+            onChanged: searchChanged,
+            decoration: InputDecoration(
+              hintText: '搜索已同步的邮件',
+              hintStyle: const TextStyle(fontSize: 14, color: muted),
+              prefixIcon: const Icon(Icons.search),
+              fillColor: const Color(0xffe9f0fc),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(32),
+                borderSide: BorderSide.none,
               ),
-            Expanded(
-              child: TextField(
-                controller: search,
-                onChanged: searchChanged,
-                decoration: InputDecoration(
-                  hintText: '搜索已同步的邮件',
-                  hintStyle: const TextStyle(fontSize: 14, color: muted),
-                  prefixIcon: const Icon(Icons.search),
-                  fillColor: const Color(0xffe9f0fc),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(32),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(
-                    vertical: 12,
-                    horizontal: 20,
-                  ),
-                ),
+              contentPadding: const EdgeInsets.symmetric(
+                vertical: 12,
+                horizontal: 20,
               ),
             ),
-            const SizedBox(width: 8),
-            IconButton(
-              tooltip: '账户与设置',
-              onPressed: settings,
-              icon: const Icon(Icons.settings_outlined, size: 22),
-            ),
-          ],
+          ),
         ),
-      );
+        const SizedBox(width: 8),
+        if (widget.localUnlock?.supported ?? false)
+          IconButton(
+            key: const Key('local-session-lock'),
+            tooltip: widget.localUnlock!.enabled
+                ? '锁定本次会话'
+                : '启用指纹 / Windows Hello 本机锁',
+            onPressed: widget.localUnlock!.busy
+                ? null
+                : () async {
+                    final controller = widget.localUnlock!;
+                    if (controller.enabled) {
+                      controller.lock();
+                    } else {
+                      await controller.enable();
+                      if (mounted &&
+                          (controller.message?.isNotEmpty ?? false) &&
+                          !controller.locked) {
+                        notify(controller.message!);
+                      }
+                    }
+                  },
+            icon: const Icon(Icons.lock_outline, size: 22),
+          ),
+        IconButton(
+          tooltip: '账户与设置',
+          onPressed: settings,
+          icon: const Icon(Icons.settings_outlined, size: 22),
+        ),
+      ],
+    ),
+  );
 
   Future<void> setFilter(String next) async {
     if (!await canLeave() || !mounted) return;
@@ -1285,7 +1749,8 @@ class MailboxState extends State<Mailbox> {
   }
 
   String get mailboxTitle {
-    final label = {
+    final label =
+        {
           'INBOX': '收件箱',
           'STARRED': '星标邮件',
           'SENT': '已发送',
@@ -1300,132 +1765,129 @@ class MailboxState extends State<Mailbox> {
   }
 
   Widget messageList() => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-            child: Text(
-              mailboxTitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+        child: Text(
+          mailboxTitle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+        child: Row(
+          children: [
+            Text(
+              {
+                    'INBOX': '收件箱',
+                    'STARRED': '星标邮件',
+                    'SENT': '已发送',
+                    'ARCHIVE': '归档',
+                    'TRASH': '废纸篓',
+                  }[folder] ??
+                  '邮件',
+              style: const TextStyle(fontSize: 13, color: muted),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-            child: Row(
-              children: [
-                Text(
-                  {
-                        'INBOX': '收件箱',
-                        'STARRED': '星标邮件',
-                        'SENT': '已发送',
-                        'ARCHIVE': '归档',
-                        'TRASH': '废纸篓',
-                      }[folder] ??
-                      '邮件',
-                  style: const TextStyle(fontSize: 13, color: muted),
-                ),
-                const SizedBox(width: 8),
-                IconButton(
-                  tooltip: '刷新邮件',
-                  onPressed: loading ? null : () => refresh(silent: true),
-                  icon: const Icon(Icons.refresh, size: 21),
-                ),
-                IconButton(
-                  tooltip: '同步邮箱',
-                  onPressed: actionBusy ? null : sync,
-                  icon: const Icon(Icons.sync, size: 21),
-                ),
-                const Spacer(),
-                Text(
-                  '${messages.length} 封已加载',
-                  style: const TextStyle(fontSize: 11, color: muted),
-                ),
-              ],
+            const SizedBox(width: 8),
+            IconButton(
+              tooltip: '刷新邮件',
+              onPressed: loading ? null : () => refresh(silent: true),
+              icon: const Icon(Icons.refresh, size: 21),
             ),
-          ),
-          const Divider(height: 1, color: Color(0xffe8edf4)),
-          SizedBox(
-            height: 46,
-            child: Row(
-              children: [
-                for (final entry in [
-                  ('all', '全部邮件', Icons.inbox_outlined),
-                  ('unread', '未读', Icons.mark_email_unread_outlined),
-                  ('starred', '已加星标', Icons.star_border),
-                ])
-                  Expanded(
-                    child: InkWell(
-                      onTap: () => setFilter(entry.$1),
-                      child: Container(
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          border: Border(
-                            bottom: BorderSide(
-                              width: 3,
-                              color: filter == entry.$1
-                                  ? blue
-                                  : Colors.transparent,
-                            ),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              entry.$3,
-                              size: 18,
-                              color: filter == entry.$1 ? blue : muted,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              entry.$2,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: filter == entry.$1 ? blue : muted,
-                                fontWeight: filter == entry.$1
-                                    ? FontWeight.w600
-                                    : FontWeight.normal,
-                              ),
-                            ),
-                          ],
+            IconButton(
+              tooltip: '同步邮箱',
+              onPressed: actionBusy ? null : sync,
+              icon: const Icon(Icons.sync, size: 21),
+            ),
+            const Spacer(),
+            Text(
+              '${messages.length} 封已加载',
+              style: const TextStyle(fontSize: 11, color: muted),
+            ),
+          ],
+        ),
+      ),
+      const Divider(height: 1, color: Color(0xffe8edf4)),
+      SizedBox(
+        height: 46,
+        child: Row(
+          children: [
+            for (final entry in [
+              ('all', '全部邮件', Icons.inbox_outlined),
+              ('unread', '未读', Icons.mark_email_unread_outlined),
+              ('starred', '已加星标', Icons.star_border),
+            ])
+              Expanded(
+                child: InkWell(
+                  onTap: () => setFilter(entry.$1),
+                  child: Container(
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      border: Border(
+                        bottom: BorderSide(
+                          width: 3,
+                          color: filter == entry.$1 ? blue : Colors.transparent,
                         ),
                       ),
                     ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          entry.$3,
+                          size: 18,
+                          color: filter == entry.$1 ? blue : muted,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          entry.$2,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: filter == entry.$1 ? blue : muted,
+                            fontWeight: filter == entry.$1
+                                ? FontWeight.w600
+                                : FontWeight.normal,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-              ],
-            ),
-          ),
-          if (loading) const LinearProgressIndicator(minHeight: 2),
-          Expanded(
-            child: messages.isEmpty && !loading
-                ? empty('这里很安静', '没有符合条件的邮件', Icons.inbox_outlined)
-                : ListView.builder(
-                    key: const ValueKey('message-list'),
-                    controller: listScroll,
-                    itemCount: messages.length + (more ? 1 : 0),
-                    itemBuilder: (ctx, i) {
-                      if (i == messages.length) {
-                        return TextButton(
-                          onPressed:
-                              loading ? null : () => refresh(append: true),
-                          child: const Text('加载更多'),
-                        );
-                      }
-                      return messageRow(messages[i]);
-                    },
-                  ),
-          ),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-            child: Text(
-              '每 30 秒刷新 · 仅搜索已同步邮件',
-              style: TextStyle(fontSize: 10, color: muted),
-            ),
-          ),
-        ],
-      );
+                ),
+              ),
+          ],
+        ),
+      ),
+      if (loading) const LinearProgressIndicator(minHeight: 2),
+      Expanded(
+        child: messages.isEmpty && !loading
+            ? empty('这里很安静', '没有符合条件的邮件', Icons.inbox_outlined)
+            : ListView.builder(
+                key: const ValueKey('message-list'),
+                controller: listScroll,
+                itemCount: messages.length + (more ? 1 : 0),
+                itemBuilder: (ctx, i) {
+                  if (i == messages.length) {
+                    return TextButton(
+                      onPressed: loading ? null : () => refresh(append: true),
+                      child: const Text('加载更多'),
+                    );
+                  }
+                  return messageRow(messages[i]);
+                },
+              ),
+      ),
+      const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        child: Text(
+          '每 30 秒刷新 · 仅搜索已同步邮件',
+          style: TextStyle(fontSize: 10, color: muted),
+        ),
+      ),
+    ],
+  );
 
   Widget messageRow(Json m) {
     final read = m['isRead'] == true;
@@ -1443,8 +1905,8 @@ class MailboxState extends State<Mailbox> {
     final sender = folder == 'SENT'
         ? '收件人：${recipients.isEmpty ? '未提供' : recipients}'
         : m['fromName']?.toString().isNotEmpty == true
-            ? m['fromName']
-            : m['fromAddress'] ?? '';
+        ? m['fromName']
+        : m['fromAddress'] ?? '';
     final style = TextStyle(
       fontSize: 13,
       fontWeight: read ? FontWeight.w400 : FontWeight.w600,
@@ -1613,110 +2075,107 @@ class MailboxState extends State<Mailbox> {
   }
 
   Widget onboarding() => Column(
-        children: [
-          const Padding(
-            padding: EdgeInsets.all(22),
-            child: Row(
+    children: [
+      const Padding(
+        padding: EdgeInsets.all(22),
+        child: Row(
+          children: [
+            Text('收件箱', style: TextStyle(color: muted, fontSize: 13)),
+            Spacer(),
+            Text('尚未连接邮箱', style: TextStyle(color: muted, fontSize: 11)),
+          ],
+        ),
+      ),
+      const Divider(height: 1, color: Color(0xffe8edf4)),
+      Expanded(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text('收件箱', style: TextStyle(color: muted, fontSize: 13)),
-                Spacer(),
-                Text('尚未连接邮箱', style: TextStyle(color: muted, fontSize: 11)),
+                Container(
+                  padding: const EdgeInsets.all(22),
+                  decoration: BoxDecoration(
+                    color: const Color(0xffe6efff),
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  child: const Icon(Icons.inbox_outlined, size: 40, color: ink),
+                ),
+                const SizedBox(height: 28),
+                const Text(
+                  '让邮件，在这里靠岸。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.w400),
+                ),
+                const SizedBox(height: 18),
+                const Text(
+                  '先连接你的第一个邮箱。\n收件、写信、整理，都可以在泊信完成。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: muted, fontSize: 14, height: 2),
+                ),
+                const SizedBox(height: 36),
+                FilledButton.icon(
+                  onPressed: settings,
+                  icon: const Icon(Icons.add),
+                  label: const Text('连接邮箱'),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 32,
+                      vertical: 20,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  '支持的邮箱可使用 OAuth 授权，也可手动配置连接',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 11, color: muted),
+                ),
+                const SizedBox(height: 32),
+                const Text(
+                  '选择邮箱服务商  ·  完成授权  ·  开始同步',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 11, color: muted),
+                ),
+                const SizedBox(height: 16),
+                TextButton(
+                  onPressed: settings,
+                  child: const Text(
+                    'QQ / 163 邮箱：使用 IMAP / SMTP 连接',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
               ],
             ),
           ),
-          const Divider(height: 1, color: Color(0xffe8edf4)),
-          Expanded(
-            child: Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(22),
-                      decoration: BoxDecoration(
-                        color: const Color(0xffe6efff),
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                      child: const Icon(Icons.inbox_outlined,
-                          size: 40, color: ink),
-                    ),
-                    const SizedBox(height: 28),
-                    const Text(
-                      '让邮件，在这里靠岸。',
-                      textAlign: TextAlign.center,
-                      style:
-                          TextStyle(fontSize: 28, fontWeight: FontWeight.w400),
-                    ),
-                    const SizedBox(height: 18),
-                    const Text(
-                      '先连接你的第一个邮箱。\n收件、写信、整理，都可以在泊信完成。',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: muted, fontSize: 14, height: 2),
-                    ),
-                    const SizedBox(height: 36),
-                    FilledButton.icon(
-                      onPressed: settings,
-                      icon: const Icon(Icons.add),
-                      label: const Text('连接邮箱'),
-                      style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 32,
-                          vertical: 20,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      '支持的邮箱可使用 OAuth 授权，也可手动配置连接',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 11, color: muted),
-                    ),
-                    const SizedBox(height: 32),
-                    const Text(
-                      '选择邮箱服务商  ·  完成授权  ·  开始同步',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 11, color: muted),
-                    ),
-                    const SizedBox(height: 16),
-                    TextButton(
-                      onPressed: settings,
-                      child: const Text(
-                        'QQ / 163 邮箱：使用 IMAP / SMTP 连接',
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ],
-      );
+        ),
+      ),
+    ],
+  );
 
   Widget empty(String title, String subtitle, IconData icon) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 55, color: const Color(0xffc7d2e7)),
-              const SizedBox(height: 20),
-              Text(
-                title,
-                style:
-                    const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 9),
-              Text(
-                subtitle,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 12, color: muted, height: 1.6),
-              ),
-            ],
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 55, color: const Color(0xffc7d2e7)),
+          const SizedBox(height: 20),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
           ),
-        ),
-      );
+          const SizedBox(height: 9),
+          Text(
+            subtitle,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12, color: muted, height: 1.6),
+          ),
+        ],
+      ),
+    ),
+  );
   Widget detail(bool back) {
     final m = selected;
     final compact = MediaQuery.sizeOf(context).width < 600;
@@ -1744,9 +2203,8 @@ class MailboxState extends State<Mailbox> {
                   ),
                 IconButton(
                   tooltip: m['isRead'] == true ? '标为未读' : '标为已读',
-                  onPressed: actionBusy ||
-                          m['_loading'] == true ||
-                          m['_error'] == true
+                  onPressed:
+                      actionBusy || m['_loading'] == true || m['_error'] == true
                       ? null
                       : () => command('SET_READ', value: m['isRead'] != true),
                   icon: Icon(
@@ -1757,12 +2215,11 @@ class MailboxState extends State<Mailbox> {
                 ),
                 IconButton(
                   tooltip: '星标',
-                  onPressed: actionBusy ||
-                          m['_loading'] == true ||
-                          m['_error'] == true
+                  onPressed:
+                      actionBusy || m['_loading'] == true || m['_error'] == true
                       ? null
                       : () =>
-                          command('SET_STAR', value: m['isStarred'] != true),
+                            command('SET_STAR', value: m['isStarred'] != true),
                   icon: Icon(
                     m['isStarred'] == true ? Icons.star : Icons.star_border,
                     color: m['isStarred'] == true ? Colors.amber : ink,
@@ -1772,15 +2229,14 @@ class MailboxState extends State<Mailbox> {
                   tooltip: '归档',
                   onPressed:
                       actionBusy || m['_loading'] == true || m['_error'] == true
-                          ? null
-                          : () => command('ARCHIVE'),
+                      ? null
+                      : () => command('ARCHIVE'),
                   icon: const Icon(Icons.archive_outlined),
                 ),
                 IconButton(
                   tooltip: folder == 'TRASH' ? '恢复到收件箱' : '移至废纸篓',
-                  onPressed: actionBusy ||
-                          m['_loading'] == true ||
-                          m['_error'] == true
+                  onPressed:
+                      actionBusy || m['_loading'] == true || m['_error'] == true
                       ? null
                       : () => command(folder == 'TRASH' ? 'RESTORE' : 'TRASH'),
                   icon: Icon(
@@ -1803,136 +2259,120 @@ class MailboxState extends State<Mailbox> {
             child: m['_loading'] == true
                 ? const Center(child: CircularProgressIndicator())
                 : m['_error'] == true
-                    ? Center(
-                        child: TextButton(
-                          onPressed: () => open(m),
-                          child: const Text('加载失败，重试'),
-                        ),
-                      )
-                    : SingleChildScrollView(
-                        key: ValueKey('reader-${m['id']}-$detailGeneration'),
-                        controller: detailScroll,
-                        padding: EdgeInsets.fromLTRB(
-                          compact ? 8 : 30,
-                          10,
-                          compact ? 8 : 30,
-                          24,
-                        ),
-                        child: Container(
-                          width: double.infinity,
-                          padding: EdgeInsets.all(compact ? 16 : 30),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(color: const Color(0xffe9edf4)),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              MailHeader(message: m),
-                              const SizedBox(height: 26),
-                              const Divider(color: Color(0xffedf0f5)),
-                              const SizedBox(height: 24),
-                              MailBody(
-                                key: ValueKey(m['id']),
-                                api: api,
-                                messageId: m['id']?.toString(),
-                                accountId: m['accountId']?.toString(),
-                                inputEnabled: !drawerOpen,
-                                html: m['bodyHtml']?.toString() ?? '',
-                                text: m['bodyText']?.toString() ?? '',
-                              ),
-                              const SizedBox(height: 30),
-                              ...rows(m['attachments']).map(
-                                (a) => Card(
-                                  color: canvas,
-                                  child: ListTile(
-                                    leading: const Icon(
-                                      Icons.attach_file,
-                                      color: blue,
-                                    ),
-                                    title: Text(
-                                      a['fileName'] ?? '附件',
-                                      style: const TextStyle(fontSize: 12),
-                                    ),
-                                    subtitle: Text('${a['size'] ?? 0} bytes'),
-                                    trailing: IconButton(
-                                      tooltip: '下载附件',
-                                      icon: const Icon(Icons.download_outlined),
-                                      onPressed: () async {
-                                        try {
-                                          final bytes =
-                                              await api.download(a['id']);
-                                          await FileSaver.instance.saveFile(
-                                            name:
-                                                (a['fileName'] ?? 'attachment')
-                                                    .toString()
-                                                    .replaceAll(
-                                                      RegExp(r'[\\/\x00-\x1F]'),
-                                                      '_',
-                                                    ),
-                                            bytes: bytes,
-                                          );
-                                        } catch (e) {
-                                          notify(e.toString());
-                                        }
-                                      },
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 14),
-                              if (inlineReply == null)
-                                Wrap(
-                                  spacing: 10,
-                                  runSpacing: 10,
-                                  children: [
-                                    OutlinedButton.icon(
-                                      onPressed: () => inlineCompose(m),
-                                      icon: const Icon(Icons.reply, size: 17),
-                                      label: const Text('回复'),
-                                    ),
-                                    TextButton.icon(
-                                      onPressed: () =>
-                                          inlineCompose(m, forward: true),
-                                      icon: const Icon(Icons.forward, size: 17),
-                                      label: const Text('转发'),
-                                    ),
-                                  ],
-                                ),
-                              if (inlineReply != null)
-                                Container(
-                                  key: inlineAnchorKey,
-                                  child: ComposeEditor(
-                                    key: inlineComposeKey,
-                                    api: api,
-                                    accounts: accounts,
-                                    initialAccountId: m['accountId'] ?? account,
-                                    reply: inlineReply,
-                                    forward: inlineForward,
-                                    inline: true,
-                                    maxBytes: caps?['limits']
-                                            ?['maxAttachmentBytes'] ??
-                                        10485760,
-                                    onSaved: notify,
-                                    onViewStatus: outbox,
-                                    onClose: () {
-                                      if (mounted) {
-                                        setState(() => inlineReply = null);
-                                        refresh(silent: true);
-                                      }
-                                    },
-                                  ),
-                                ),
-                              const SizedBox(height: 20),
-                              const Text(
-                                '隔离邮件阅读 · 远程图片默认阻止',
-                                style: TextStyle(fontSize: 10, color: muted),
-                              ),
-                            ],
-                          ),
-                        ),
+                ? Center(
+                    child: TextButton(
+                      onPressed: () => open(m),
+                      child: const Text('加载失败，重试'),
+                    ),
+                  )
+                : SingleChildScrollView(
+                    key: ValueKey('reader-${m['id']}-$detailGeneration'),
+                    controller: detailScroll,
+                    padding: EdgeInsets.fromLTRB(
+                      compact ? 8 : 30,
+                      10,
+                      compact ? 8 : 30,
+                      24,
+                    ),
+                    child: Container(
+                      width: double.infinity,
+                      padding: EdgeInsets.all(compact ? 16 : 30),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: const Color(0xffe9edf4)),
                       ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          MailHeader(message: m),
+                          const SizedBox(height: 26),
+                          const Divider(color: Color(0xffedf0f5)),
+                          const SizedBox(height: 24),
+                          MailBody(
+                            key: ValueKey(m['id']),
+                            api: api,
+                            messageId: m['id']?.toString(),
+                            accountId: m['accountId']?.toString(),
+                            inputEnabled: !drawerOpen,
+                            html: m['bodyHtml']?.toString() ?? '',
+                            text: m['bodyText']?.toString() ?? '',
+                          ),
+                          const SizedBox(height: 30),
+                          ...rows(m['attachments']).map(
+                            (a) => Card(
+                              color: canvas,
+                              child: ListTile(
+                                leading: const Icon(
+                                  Icons.attach_file,
+                                  color: blue,
+                                ),
+                                title: Text(
+                                  a['fileName'] ?? '附件',
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                                subtitle: Text('${a['size'] ?? 0} bytes'),
+                                trailing: IconButton(
+                                  tooltip: '下载附件',
+                                  icon: const Icon(Icons.download_outlined),
+                                  onPressed: () => downloadAttachment(a),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          if (inlineReply == null)
+                            Wrap(
+                              spacing: 10,
+                              runSpacing: 10,
+                              children: [
+                                OutlinedButton.icon(
+                                  onPressed: () => inlineCompose(m),
+                                  icon: const Icon(Icons.reply, size: 17),
+                                  label: const Text('回复'),
+                                ),
+                                TextButton.icon(
+                                  onPressed: () =>
+                                      inlineCompose(m, forward: true),
+                                  icon: const Icon(Icons.forward, size: 17),
+                                  label: const Text('转发'),
+                                ),
+                              ],
+                            ),
+                          if (inlineReply != null)
+                            Container(
+                              key: inlineAnchorKey,
+                              child: ComposeEditor(
+                                captureSessionGuard: captureSessionGuard,
+                                key: inlineComposeKey,
+                                api: api,
+                                accounts: accounts,
+                                initialAccountId: m['accountId'] ?? account,
+                                reply: inlineReply,
+                                forward: inlineForward,
+                                inline: true,
+                                maxBytes:
+                                    caps?['limits']?['maxAttachmentBytes'] ??
+                                    10485760,
+                                onSaved: notify,
+                                onViewStatus: outbox,
+                                onClose: () {
+                                  if (mounted) {
+                                    setState(() => inlineReply = null);
+                                    refresh(silent: true);
+                                  }
+                                },
+                              ),
+                            ),
+                          const SizedBox(height: 20),
+                          const Text(
+                            '隔离邮件阅读 · 远程图片默认阻止',
+                            style: TextStyle(fontSize: 10, color: muted),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
           ),
         ],
       ),
@@ -1946,7 +2386,8 @@ class _ComposeIntent extends Intent {
 
 class OutboxDialog extends StatefulWidget {
   final MailApi api;
-  const OutboxDialog({super.key, required this.api});
+  final bool Function() Function()? captureSessionGuard;
+  const OutboxDialog({super.key, required this.api, this.captureSessionGuard});
   @override
   State<OutboxDialog> createState() => _OutboxDialogState();
 }
@@ -1970,9 +2411,13 @@ class _OutboxDialogState extends State<OutboxDialog> {
   }
 
   Future<void> load() async {
+    final check = widget.captureSessionGuard?.call() ?? () => true;
+    final bearer = widget.api.token;
+    bool current() => mounted && check() && widget.api.token == bearer;
+    if (!current()) return;
     try {
       final data = await widget.api.request('GET', '/send-intents');
-      if (mounted) {
+      if (current()) {
         setState(() {
           items = (data['items'] as List)
               .map((e) => Map<String, dynamic>.from(e))
@@ -1982,7 +2427,7 @@ class _OutboxDialogState extends State<OutboxDialog> {
         });
       }
     } catch (e) {
-      if (mounted) {
+      if (current()) {
         setState(() {
           error = e.toString();
           loading = false;
@@ -1993,65 +2438,56 @@ class _OutboxDialogState extends State<OutboxDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: const Text('发件状态'),
-        content: SizedBox(
-          width: 540,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                '“已被服务商接受”不保证收件人已收到。结果待核实时，请勿盲目重发。',
-                style: TextStyle(fontSize: 12, color: muted, height: 1.6),
-              ),
-              const SizedBox(height: 18),
-              if (loading) const LinearProgressIndicator(),
-              if (error.isNotEmpty) Text(error),
-              if (items.isEmpty && !loading)
-                const Padding(
-                    padding: EdgeInsets.all(24), child: Text('暂无发送记录')),
-              Flexible(
-                child: ListView(
-                  shrinkWrap: true,
-                  children: items
-                      .map(
-                        (m) => ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          leading: Icon(
-                            m['status'] == 'FAILED'
-                                ? Icons.error_outline
-                                : m['status'] == 'UNKNOWN'
-                                    ? Icons.help_outline
-                                    : Icons.outbox_outlined,
-                            color: blue,
-                          ),
-                          title: Text(m['subject'] ?? '（无主题）'),
-                          subtitle: Text(
-                            '${{
-                                  'QUEUED': '排队中',
-                                  'PREPARING': '准备发送',
-                                  'SUBMITTING': '提交中',
-                                  'ACCEPTED': '已被服务商接受',
-                                  'SENT_COPY_CONFIRMED': '已确认已发送副本',
-                                  'FAILED': '发送失败',
-                                  'UNKNOWN': '结果待核实'
-                                }[m['status']] ?? m['status']}${m['errorCode'] == null ? '' : ' · ${m['errorCode']}'}',
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                        ),
-                      )
-                      .toList(),
-                ),
-              ),
-            ],
+    title: const Text('发件状态'),
+    content: SizedBox(
+      width: 540,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '“已被服务商接受”不保证收件人已收到。结果待核实时，请勿盲目重发。',
+            style: TextStyle(fontSize: 12, color: muted, height: 1.6),
           ),
-        ),
-        actions: [
-          TextButton(onPressed: load, child: const Text('刷新')),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('关闭'),
+          const SizedBox(height: 18),
+          if (loading) const LinearProgressIndicator(),
+          if (error.isNotEmpty) Text(error),
+          if (items.isEmpty && !loading)
+            const Padding(padding: EdgeInsets.all(24), child: Text('暂无发送记录')),
+          Flexible(
+            child: ListView(
+              shrinkWrap: true,
+              children: items
+                  .map(
+                    (m) => ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(
+                        m['status'] == 'FAILED'
+                            ? Icons.error_outline
+                            : m['status'] == 'UNKNOWN'
+                            ? Icons.help_outline
+                            : Icons.outbox_outlined,
+                        color: blue,
+                      ),
+                      title: Text(m['subject'] ?? '（无主题）'),
+                      subtitle: Text(
+                        '${{'QUEUED': '排队中', 'PREPARING': '准备发送', 'SUBMITTING': '提交中', 'ACCEPTED': '已被服务商接受', 'SENT_COPY_CONFIRMED': '已确认已发送副本', 'FAILED': '发送失败', 'UNKNOWN': '结果待核实'}[m['status']] ?? m['status']}${m['errorCode'] == null ? '' : ' · ${m['errorCode']}'}',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
           ),
         ],
-      );
+      ),
+    ),
+    actions: [
+      TextButton(onPressed: load, child: const Text('刷新')),
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('关闭'),
+      ),
+    ],
+  );
 }

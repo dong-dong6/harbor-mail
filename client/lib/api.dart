@@ -13,35 +13,56 @@ class ApiException implements Exception {
 class MailApi {
   final http.Client client;
   final String base;
-  String? token;
-  MailApi({http.Client? client, String? base})
-      : client = client ?? http.Client(),
-        base = base ??
-            const String.fromEnvironment('API_BASE', defaultValue: '/api/v1');
+  String? _token;
+
+  /// The session owner can immediately retire protected UI after any current
+  /// API path (including passkeys) clears its token. Never fires on a login or
+  /// on a stale request rejection which leaves the current token untouched.
+  void Function()? onSessionCleared;
+  String? get token => _token;
+  set token(String? value) {
+    final wasAuthenticated = _token != null;
+    _token = value;
+    if (wasAuthenticated && value == null) onSessionCleared?.call();
+  }
+
+  MailApi({http.Client? client, String? base, this.onSessionCleared})
+    : client = client ?? http.Client(),
+      base =
+          base ??
+          const String.fromEnvironment('API_BASE', defaultValue: '/api/v1');
   Uri uri(String path, [Map<String, String>? query]) =>
       Uri.parse('$base$path').replace(queryParameters: query);
-  Map<String, String> get headers => {
-        'Content-Type': 'application/json',
-        if (token != null) 'Authorization': 'Bearer $token',
-      };
+  Map<String, String> get headers => _headersFor(token);
+  Map<String, String> _headersFor(String? bearer) => {
+    'Content-Type': 'application/json',
+    if (bearer != null) 'Authorization': 'Bearer $bearer',
+  };
+
+  /// A delayed rejection of an old request must not sign out a newer login.
+  void _clearRejectedSession(String? requestBearer) {
+    if (requestBearer != null && token == requestBearer) token = null;
+  }
+
   Future<dynamic> request(
     String method,
     String path, {
     Object? body,
     Map<String, String>? query,
     String? key,
-    bool followRedirects = true,
+    bool followRedirects = false,
   }) async {
+    final bearer = token;
     final req = http.Request(method, uri(path, query))
       ..followRedirects = followRedirects
-      ..headers.addAll(headers);
+      ..headers.addAll(_headersFor(bearer));
     if (key != null) req.headers['Idempotency-Key'] = key;
     if (body != null) req.body = jsonEncode(body);
     try {
       final response = await http.Response.fromStream(
         await client.send(req).timeout(const Duration(seconds: 30)),
       ).timeout(const Duration(seconds: 30));
-      return decode(response);
+      return decode(response, requestBearer: bearer);
     } on ApiException {
       rethrow;
     } catch (_) {
@@ -49,8 +70,11 @@ class MailApi {
     }
   }
 
-  dynamic decode(http.Response response) {
-    if (response.statusCode == 401) token = null;
+  dynamic decode(http.Response response, {required String? requestBearer}) {
+    if (response.statusCode == 401) _clearRejectedSession(requestBearer);
+    if (response.statusCode >= 300 && response.statusCode < 400) {
+      throw ApiException('API_REDIRECT', '服务器地址发生重定向，请核对服务器 URL');
+    }
     dynamic data;
     try {
       data = response.body.isEmpty
@@ -63,7 +87,6 @@ class MailApi {
       throw ApiException('INVALID_RESPONSE', '服务器返回了无法识别的响应');
     }
     if (response.statusCode >= 400) {
-      if (response.statusCode == 401) token = null;
       final error = data is Map ? data['error'] : null;
       throw ApiException(
         error?['code']?.toString() ?? 'HTTP_${response.statusCode}',
@@ -134,26 +157,34 @@ class MailApi {
     String name,
     Uint8List bytes,
   ) async {
+    final bearer = token;
     final req = http.MultipartRequest(
       'POST',
       uri('/drafts/$draftId/attachments'),
-    );
-    req.headers['Authorization'] = 'Bearer $token';
+    )..followRedirects = false;
+    if (bearer != null) req.headers['Authorization'] = 'Bearer $bearer';
     req.files.add(http.MultipartFile.fromBytes('file', bytes, filename: name));
     return Map<String, dynamic>.from(
       decode(
         await http.Response.fromStream(
           await client.send(req).timeout(const Duration(seconds: 60)),
         ),
+        requestBearer: bearer,
       ),
     );
   }
 
   Future<Uint8List> download(String id) async {
-    final response = await client
-        .get(uri('/attachments/$id/content'), headers: headers)
-        .timeout(const Duration(seconds: 60));
-    if (response.statusCode >= 400) decode(response);
+    final bearer = token;
+    final request = http.Request('GET', uri('/attachments/$id/content'))
+      ..followRedirects = false
+      ..headers.addAll(_headersFor(bearer));
+    final response = await http.Response.fromStream(
+      await client.send(request).timeout(const Duration(seconds: 60)),
+    ).timeout(const Duration(seconds: 60));
+    if (response.statusCode >= 300) {
+      decode(response, requestBearer: bearer);
+    }
     return response.bodyBytes;
   }
 
@@ -169,8 +200,12 @@ class MailApi {
         bearer != null && token == bearer && (isCurrent?.call() ?? true);
     if (!current()) throw ApiException('UNAUTHORIZED', '请重新登录');
     final path = '/messages/${Uri.encodeComponent(messageId)}/images';
-    final manifest = await request('GET', path,
-        query: {'accountId': accountId}, followRedirects: false);
+    final manifest = await request(
+      'GET',
+      path,
+      query: {'accountId': accountId},
+      followRedirects: false,
+    );
     if (!current()) throw ApiException('UNAUTHORIZED', '请重新登录');
     if (manifest is! Map ||
         manifest['items'] is! List ||
@@ -195,15 +230,19 @@ class MailApi {
     for (final item in items) {
       if (!current() || totalBytes >= maxBatchBytes) break;
       try {
-        final req = http.Request(
-            'GET', uri('$path/${item['id']}', {'accountId': accountId}))
-          ..followRedirects = false
-          ..headers['Authorization'] = 'Bearer $bearer'
-          ..headers['Accept'] = 'image/png';
-        final streamed =
-            await client.send(req).timeout(const Duration(seconds: 12));
+        final req =
+            http.Request(
+                'GET',
+                uri('$path/${item['id']}', {'accountId': accountId}),
+              )
+              ..followRedirects = false
+              ..headers['Authorization'] = 'Bearer $bearer'
+              ..headers['Accept'] = 'image/png';
+        final streamed = await client
+            .send(req)
+            .timeout(const Duration(seconds: 12));
         if (streamed.statusCode == 401) {
-          token = null;
+          _clearRejectedSession(bearer);
           await streamed.stream.listen((_) {}).cancel();
           throw ApiException('UNAUTHORIZED', '请重新登录');
         }
@@ -219,8 +258,9 @@ class MailApi {
           continue;
         }
         final bytes = BytesBuilder(copy: false);
-        await for (final chunk
-            in streamed.stream.timeout(const Duration(seconds: 12))) {
+        await for (final chunk in streamed.stream.timeout(
+          const Duration(seconds: 12),
+        )) {
           if (!current()) break;
           if (bytes.length + chunk.length > 4194304) {
             throw ApiException('IMAGE_TOO_LARGE', '图片过大');

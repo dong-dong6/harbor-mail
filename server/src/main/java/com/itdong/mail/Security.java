@@ -132,7 +132,7 @@ public class Security extends OncePerRequestFilter {
     }
   }
 
-  public synchronized Map<String, Object> login(Map<String, Object> body, String ip) {
+  synchronized void passwordAttempt(String ip) {
     long now = System.currentTimeMillis();
     attempts.entrySet().removeIf(e -> now - e.getValue().start > 900_000);
     // Global bucket plus IP bucket prevents unbounded spoofed-IP entries and distributed guessing.
@@ -142,24 +142,45 @@ public class Security extends OncePerRequestFilter {
         throw new ApiError(429, "RATE_LIMITED", "Too many login attempts; retry in 15 minutes");
       attempts.put(bucket, new Attempt(a == null ? now : a.start, a == null ? 1 : a.count + 1));
     }
-    var owner = store.one("SELECT * FROM owner_user WHERE id=1");
-    String supplied = Json.string(body, "password");
-    boolean valid =
-        supplied.getBytes(StandardCharsets.UTF_8).length <= 72
-            && bcrypt.matches(supplied, (String) owner.get("password_hash"));
-    if (!valid || !Json.string(body, "username").equals(owner.get("username")))
+  }
+
+  void confirmOwnerPassword(String supplied, String ip) {
+    passwordAttempt(ip);
+    String hash = store.db.queryForObject("SELECT password_hash FROM owner_user WHERE id=1", String.class);
+    if (supplied.isBlank() || supplied.getBytes(StandardCharsets.UTF_8).length > 72
+        || !bcrypt.matches(supplied, hash))
       throw new ApiError(401, "INVALID_CREDENTIALS", "Invalid username or password");
-    String token = token();
-    long expires = now + 8 * 3600_000L;
-    store.db.update("DELETE FROM access_token WHERE expires_at<?", now);
-    store.db.update("INSERT INTO access_token VALUES(?,?)", hash(token), expires);
-    return Json.map(
-        "accessToken",
-        token,
-        "expiresAt",
-        Instant.ofEpochMilli(expires).toString(),
-        "demoMode",
-        demo);
+  }
+
+  public Map<String, Object> login(Map<String, Object> body, String ip) {
+    confirmOwnerPassword(Json.string(body, "password"), ip);
+    var owner = store.one("SELECT * FROM owner_user WHERE id=1");
+    if (!Json.string(body, "username").equals(owner.get("username")))
+      throw new ApiError(401, "INVALID_CREDENTIALS", "Invalid username or password");
+    var session = issueOwnerSession();
+    session.put("demoMode", demo);
+    return session;
+  }
+
+  /** Shared eight-hour session issuance for password and verified WebAuthn authentication. */
+  Map<String, Object> issueOwnerSession() {
+    return store.write(() -> {
+      String token = token();
+      long now = System.currentTimeMillis(), expires = now + 8 * 3600_000L;
+      store.db.update("DELETE FROM access_token WHERE expires_at<=?", now);
+      store.db.update("INSERT INTO access_token VALUES(?,?)", hash(token), expires);
+      return Json.map("accessToken", token, "expiresAt", Instant.ofEpochMilli(expires).toString());
+    });
+  }
+
+  void logout(String tokenHash) {
+    store.write(() -> {
+      store.db.update("UPDATE device_pairing SET state='EXPIRED',secret_hash=NULL WHERE creator_hash=? AND state IN ('CREATED','CLAIMED','APPROVED')", tokenHash);
+      store.db.update("UPDATE paired_device SET revoked=TRUE WHERE id IN (SELECT device_id FROM device_access_token WHERE token_hash=?)", tokenHash);
+      store.db.update("DELETE FROM passkey_request WHERE creator_hash=?", tokenHash);
+      store.db.update("DELETE FROM access_token WHERE token_hash=?", tokenHash);
+      return null;
+    });
   }
 
   /**
@@ -218,6 +239,14 @@ public class Security extends OncePerRequestFilter {
           "code", "INVALID_PATH", "message", "Use the canonical request path", "requestId", requestId))));
       return;
     }
+    // APK resources are deliberately outside public static assets. Expose only the two
+    // explicit read routes, never an unauthenticated directory/prefix handler.
+    if ((path.equals("/downloads/android") || path.startsWith("/downloads/android/"))
+        && !(Set.of("/downloads/android/manifest.json", "/downloads/android/app.apk").contains(path)
+            && Set.of("GET", "HEAD").contains(req.getMethod()))) {
+      res.setStatus(404);
+      return;
+    }
     if (path.startsWith("/api/"))
       res.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
     else
@@ -237,6 +266,11 @@ public class Security extends OncePerRequestFilter {
     boolean publicPath =
         (path.equals("/api/v1/health") && Set.of("GET", "HEAD").contains(req.getMethod()))
             || (path.equals("/api/v1/auth/login") && req.getMethod().equals("POST"))
+            || (Set.of("/api/v1/auth/device-pairings/claim", "/api/v1/auth/device-pairings/poll",
+                "/api/v1/auth/device-pairings/redeem").contains(path) && req.getMethod().equals("POST"))
+            || (path.equals("/api/v1/auth/passkeys/capabilities") && req.getMethod().equals("GET"))
+            || (Set.of("/api/v1/auth/passkeys/authentication/options", "/api/v1/auth/passkeys/authentication/verify")
+                .contains(path) && req.getMethod().equals("POST"))
             || (path.matches("/api/v1/oauth/(GMAIL|OUTLOOK|EXCHANGE)/callback")
                 && req.getMethod().equals("GET"));
     if (path.startsWith("/api/") && !publicPath) {
@@ -245,9 +279,12 @@ public class Security extends OncePerRequestFilter {
           h != null
               && h.startsWith("Bearer ")
               && store.db.queryForObject(
-                      "SELECT COUNT(*) FROM access_token WHERE token_hash=? AND expires_at>?",
+                      "SELECT COUNT(*) FROM access_token a WHERE a.token_hash=? AND a.expires_at>? "
+                          + "AND NOT EXISTS (SELECT 1 FROM device_access_token t JOIN paired_device d ON d.id=t.device_id "
+                          + "WHERE t.token_hash=a.token_hash AND (d.revoked=TRUE OR d.expires_at<=?))",
                       Integer.class,
                       hash(h.substring(7)),
+                      System.currentTimeMillis(),
                       System.currentTimeMillis())
                   > 0;
       if (!valid) {
@@ -267,11 +304,23 @@ public class Security extends OncePerRequestFilter {
                             requestId))));
         return;
       }
+      String tokenHash = hash(h.substring(7));
+      req.setAttribute("tokenHash", tokenHash);
+      store.db.update("UPDATE paired_device SET last_seen_at=? WHERE revoked=FALSE AND last_seen_at<? "
+          + "AND id IN (SELECT device_id FROM device_access_token WHERE token_hash=?)",
+          System.currentTimeMillis(), System.currentTimeMillis() - 60_000, tokenHash);
+    }
+    if ((path.startsWith("/api/v1/auth/device-pairings") || path.startsWith("/api/v1/auth/passkeys")) && req.getQueryString() != null) {
+      res.setStatus(400);
+      res.setContentType("application/json");
+      res.getWriter().write(Json.encode(Json.map("error", Json.map("code", "INVALID_REQUEST",
+          "message", "Authentication inputs must use JSON bodies", "requestId", requestId))));
+      return;
     }
     if (path.startsWith("/api/")
         && req.getContentType() != null
         && req.getContentType().toLowerCase(Locale.ROOT).contains("json")) {
-      long max = path.equals("/api/v1/auth/login") ? 4096 : 4 * 1024 * 1024;
+      long max = path.startsWith("/api/v1/auth/passkeys/") ? 65_536 : path.startsWith("/api/v1/auth/") ? 4096 : 4 * 1024 * 1024;
       if (req.getContentLengthLong() > max) {
         res.setStatus(413);
         res.setContentType("application/json");

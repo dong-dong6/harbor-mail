@@ -7,7 +7,8 @@
     "test": "node oauth_bridge_test.cjs && node test_mail_sanitizer.cjs && node mail_navigation_test.cjs && node semantic_value_selector_test.cjs",
     "test:browser": "node oauth_browser_smoke.cjs && node test_mail_renderer.cjs",
     "test:mail-routes": "node test_mail_routes_browser.cjs",
-    "test:mail-header": "node test_mail_routes_browser.cjs"
+    "test:mail-header": "node test_mail_routes_browser.cjs",
+    "test:passkeys": "node test_passkeys_browser.cjs"
   },
   "devDependencies": {
     "jsdom": "30.1.2",

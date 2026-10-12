@@ -6,6 +6,23 @@ import 'package:http/testing.dart';
 import 'package:harbor_mail/api.dart';
 
 void main() {
+  test('authenticated API does not follow redirects to another destination',
+      () async {
+    final api = MailApi(
+      base: 'https://mail.invalid/api/v1',
+      client: MockClient((request) async {
+        expect(request.followRedirects, isFalse);
+        return http.Response('{}', 307,
+            headers: {'location': 'https://other.invalid/api/v1/accounts'});
+      }),
+    )..token = 'synthetic-session';
+    await expectLater(
+        api.request('GET', '/accounts'),
+        throwsA(
+            isA<ApiException>().having((e) => e.code, 'code', 'API_REDIRECT')));
+    expect(api.token, 'synthetic-session');
+    api.dispose();
+  });
   test(
     'login retains only session bearer and applies it to requests',
     () async {

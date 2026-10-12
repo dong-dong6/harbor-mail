@@ -17,7 +17,7 @@ void main() {
     expect(parsed.location, route.location);
   });
   test('settings have independent URLs', () {
-    for (final leaf in ['accounts', 'add', 'oauth']) {
+    for (final leaf in ['accounts', 'add', 'oauth', 'devices', 'passkeys']) {
       expect(MailRoute.parse('/settings/$leaf').settings, leaf);
     }
   });
@@ -38,8 +38,9 @@ void main() {
   });
   test('only navigation allowlist survives serialization', () {
     expect(
-      MailRoute.parse('/mail/m1?token=secret&query=private&body=private')
-          .location,
+      MailRoute.parse(
+        '/mail/m1?token=secret&query=private&body=private',
+      ).location,
       '/mail/m1',
     );
     expect(MailRoute.parse('/mail?filter=invalid').location, '/mail');

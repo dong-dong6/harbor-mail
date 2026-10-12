@@ -15,8 +15,50 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  android-apk:
+    name: Build verified development Android APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CI: 'true'
+      BOT: 'true'
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
+      DART_SUPPRESS_ANALYTICS: 'true'
+      HARBOR_ANDROID_NDK_VERSION: '29.0.14206865'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned Flutter SDK from official archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.47.5-stable.tar.xz \
+            --output "$RUNNER_TEMP/flutter.tar.xz"
+          echo "2132e990f236f8d22e7c6314b29a191a95b10d7cbcfec9b4e2e303d996652cbb  $RUNNER_TEMP/flutter.tar.xz" | sha256sum --check
+          tar -xf "$RUNNER_TEMP/flutter.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: Build this checkout using the runner's preinstalled Android SDK
+        # Fails closed if a required SDK component/license is absent; never accepts licenses.
+        # Ephemeral default debug signing only. No production keystore or persistent key cache.
+        run: bash scripts/build-android-download.sh
+      - name: Preserve verified development APK and manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-development-${{ github.sha }}
+          path: server/src/main/resources/META-INF/android-download/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
   build:
     name: Test and build Web + Java
+    needs: android-apk
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -79,6 +121,11 @@ jobs:
           client/tool/node_modules/.bin/playwright install --with-deps chromium
           BROWSER_PATH=$(node -e "process.stdout.write(require('./client/tool/node_modules/playwright').chromium.executablePath())")
           CHROMIUM="$BROWSER_PATH" CHROMIUM_PATH="$BROWSER_PATH" npm run test:browser --prefix client/tool
+      - name: Include same-run verified APK in private JAR resources
+        uses: actions/download-artifact@v8
+        with:
+          name: android-development-${{ github.sha }}
+          path: server/src/main/resources/META-INF/android-download
       - name: Analyze, test (H2), build Web, and package integrated JAR
         run: bash scripts/build.sh
       - name: Preserve compiled Web for isolated browser diagnostics
@@ -94,6 +141,11 @@ jobs:
         run: |
           BROWSER_PATH=$(node -e "process.stdout.write(require('./client/tool/node_modules/playwright').chromium.executablePath())")
           CHROMIUM_PATH="$BROWSER_PATH" npm run test:mail-routes --prefix client/tool
+      - name: Verify passkey protocol with isolated Chromium virtual authenticator
+        shell: bash
+        run: |
+          BROWSER_PATH=$(node -e "process.stdout.write(require('./client/tool/node_modules/playwright').chromium.executablePath())")
+          CHROMIUM_PATH="$BROWSER_PATH" bash scripts/test-passkeys-browser.sh
       - name: Preserve H2 test reports
         if: always()
         run: |
@@ -127,6 +179,7 @@ jobs:
           "$ready" || { cat test-results/demo.log; exit 1; }
           grep -q flutter_bootstrap.js "$RUNNER_TEMP/index.html"
           python3 scripts/smoke-demo.py --url http://127.0.0.1:8080
+          python3 scripts/smoke-android-download.py --url http://127.0.0.1:8080 --source-commit "$GITHUB_SHA"
           python3 scripts/smoke-static-assets.py --url http://127.0.0.1:8080 > test-results/static-assets-http.json
       - name: Create complete archive and checksum
         run: bash scripts/package.sh
@@ -179,4 +232,4 @@ jobs:
           gh release create "$RELEASE_TAG" \
             "mail-client-${RELEASE_TAG}.zip" SHA256SUMS \
             --verify-tag --title "Harbor Mail $RELEASE_TAG" \
-            --notes "Complete source + Flutter Web/Java 21 runtime archive. Extract the ZIP and follow README.md. This build does not include native installers."
+            --notes "Complete source + Flutter Web/Java 21 runtime archive. Extract the ZIP and follow README.md. Includes a development-debug Android APK at /downloads/android/app.apk when the JAR is running. This is a test build, not a production-signed installer; see docs/ANDROID_DOWNLOADS.md."

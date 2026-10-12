@@ -35,8 +35,7 @@ public class MailController {
 
   @PostMapping("/auth/logout")
   ResponseEntity<?> logout(@RequestHeader("Authorization") String h) {
-    mail.store.db.update(
-        "DELETE FROM access_token WHERE token_hash=?", Security.hash(h.substring(7)));
+    security.logout(Security.hash(h.substring(7)));
     return ResponseEntity.noContent().build();
   }
 
