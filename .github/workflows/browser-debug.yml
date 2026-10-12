@@ -72,9 +72,15 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - name: Overlay reviewed JavaScript bridge for diagnostics
+        if: env.SOURCE_RUN != '0'
+        run: |
+          cp client/web/mail_navigation.js client/build/web/mail_navigation.js
+          echo "Reused compiled Dart bundle; JavaScript bridge and test harness from $GITHUB_SHA"
       - name: Test actual browser interaction
         run: |
           npm ci --prefix client/tool --ignore-scripts --no-audit --no-fund
+          npm test --prefix client/tool
           client/tool/node_modules/.bin/playwright install --with-deps chromium
           BROWSER_PATH=$(node -e "process.stdout.write(require('./client/tool/node_modules/playwright').chromium.executablePath())")
           CHROMIUM_PATH="$BROWSER_PATH" npm run test:mail-routes --prefix client/tool

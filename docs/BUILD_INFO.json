@@ -23,7 +23,7 @@
   },
   "flutterAnalyze": "passed",
   "flutterTests": 89,
-  "browserEndToEnd": "isolated Chromium OAuth/HTML/image tests passed on candidate CI; full UI harness must pass exact-commit CI before deployment",
+  "browserEndToEnd": "passed desktop/mobile real Chromium diagnostic run 38217809073; final exact-commit CI remains required",
   "migrationRollbackCompatibility": "fresh actual bf3780f-source V1-V4 JAR startup/upload/download against V5 passed on H2 and PostgreSQL",
   "realProviderAcceptance": "not_run",
   "productionDeployment": "not_performed",
