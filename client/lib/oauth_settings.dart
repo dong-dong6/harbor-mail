@@ -7,17 +7,19 @@ import 'api.dart';
 class OAuthSettingsPage extends StatefulWidget {
   final MailApi api;
   final bool demoMode;
+  final VoidCallback? onClose;
   const OAuthSettingsPage({
     super.key,
     required this.api,
     this.demoMode = false,
+    this.onClose,
   });
 
   @override
-  State<OAuthSettingsPage> createState() => _OAuthSettingsPageState();
+  OAuthSettingsPageState createState() => OAuthSettingsPageState();
 }
 
-class _OAuthSettingsPageState extends State<OAuthSettingsPage> {
+class OAuthSettingsPageState extends State<OAuthSettingsPage> {
   var formKey = GlobalKey<FormState>();
   final clientId = TextEditingController();
   final redirectUri = TextEditingController();
@@ -145,9 +147,15 @@ class _OAuthSettingsPageState extends State<OAuthSettingsPage> {
         action: '放弃更改',
       );
 
+  Future<bool> canLeave() async => !busy && !confirming && await discard();
   Future<void> requestClose() async {
-    if (busy || confirming) return;
-    if (await discard() && mounted) Navigator.pop(context);
+    if (await canLeave() && mounted) {
+      if (widget.onClose != null) {
+        widget.onClose!();
+      } else {
+        Navigator.pop(context);
+      }
+    }
   }
 
   Future<void> load({bool reload = false}) async {
@@ -233,7 +241,8 @@ class _OAuthSettingsPageState extends State<OAuthSettingsPage> {
         secret.clear();
         error = safeError(e);
         if (submittedSecret) error += ' 密钥输入已清空。';
-        needsReload = e is! ApiException ||
+        needsReload =
+            e is! ApiException ||
             [
               'NETWORK',
               'CONFIG_REVISION_CONFLICT',
@@ -343,111 +352,111 @@ class _OAuthSettingsPageState extends State<OAuthSettingsPage> {
 
   @override
   Widget build(BuildContext context) => PopScope(
-        canPop: false,
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) requestClose();
-        },
-        child: CallbackShortcuts(
-          bindings: {
-            const SingleActivator(LogicalKeyboardKey.escape): requestClose,
-          },
-          child: Focus(
-            focusNode: pageFocus,
-            autofocus: true,
-            child: Scaffold(
-              appBar: AppBar(
-                title: const Text('系统 OAuth 设置'),
-                leading: IconButton(
-                  tooltip: '返回账户设置',
-                  onPressed: busy || confirming ? null : requestClose,
-                  icon: const Icon(Icons.arrow_back),
-                ),
-                actions: [
-                  IconButton(
-                    tooltip: '重新载入配置',
-                    onPressed: locked ? null : () => load(reload: true),
-                    icon: const Icon(Icons.refresh),
-                  ),
-                ],
+    canPop: false,
+    onPopInvokedWithResult: (didPop, _) {
+      if (!didPop) requestClose();
+    },
+    child: CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): requestClose,
+      },
+      child: Focus(
+        focusNode: pageFocus,
+        autofocus: true,
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('系统 OAuth 设置'),
+            leading: IconButton(
+              tooltip: '返回账户设置',
+              onPressed: busy || confirming ? null : requestClose,
+              icon: const Icon(Icons.arrow_back),
+            ),
+            actions: [
+              IconButton(
+                tooltip: '重新载入配置',
+                onPressed: locked ? null : () => load(reload: true),
+                icon: const Icon(Icons.refresh),
               ),
-              body: SafeArea(
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 840),
-                    child: ListView(
-                      padding: const EdgeInsets.all(20),
-                      children: [
-                        const Text('管理员配置服务商应用；每个邮箱仍需在服务商页面单独授权。'),
-                        const SizedBox(height: 12),
-                        if (widget.demoMode || snapshot?.demoMode == true)
-                          messageBox(
-                            '演示环境 · 仅可查看配置状态。所有输入和保存均已禁用，请勿输入真实密钥。',
-                            color: Colors.amber,
-                          )
-                        else if (snapshot?.readOnly == true)
-                          messageBox('当前配置为只读，不能编辑或保存。'),
-                        if (loading) ...[
-                          const LinearProgressIndicator(),
-                          const SizedBox(height: 12),
-                          const Text('正在载入配置…'),
-                        ],
-                        if (error.isNotEmpty)
-                          messageBox(error, color: Colors.red),
-                        if (notice.isNotEmpty)
-                          messageBox(notice, color: Colors.green),
-                        if (snapshot != null) ...[
-                          const SizedBox(height: 8),
-                          InputDecorator(
-                            decoration:
-                                const InputDecoration(labelText: '邮箱服务'),
-                            child: DropdownButtonHideUnderline(
-                              child: DropdownButton<String>(
-                                key: const Key('oauth-provider'),
-                                value: provider,
-                                isExpanded: true,
-                                items: oauthProviderNames.entries
-                                    .map((entry) => DropdownMenuItem(
-                                          value: entry.key,
-                                          child: Text(entry.value),
-                                        ))
-                                    .toList(),
-                                onChanged: locked
-                                    ? null
-                                    : (value) => selectProvider(value!),
-                              ),
-                            ),
+            ],
+          ),
+          body: SafeArea(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 840),
+                child: ListView(
+                  padding: const EdgeInsets.all(20),
+                  children: [
+                    const Text('管理员配置服务商应用；每个邮箱仍需在服务商页面单独授权。'),
+                    const SizedBox(height: 12),
+                    if (widget.demoMode || snapshot?.demoMode == true)
+                      messageBox(
+                        '演示环境 · 仅可查看配置状态。所有输入和保存均已禁用，请勿输入真实密钥。',
+                        color: Colors.amber,
+                      )
+                    else if (snapshot?.readOnly == true)
+                      messageBox('当前配置为只读，不能编辑或保存。'),
+                    if (loading) ...[
+                      const LinearProgressIndicator(),
+                      const SizedBox(height: 12),
+                      const Text('正在载入配置…'),
+                    ],
+                    if (error.isNotEmpty) messageBox(error, color: Colors.red),
+                    if (notice.isNotEmpty)
+                      messageBox(notice, color: Colors.green),
+                    if (snapshot != null) ...[
+                      const SizedBox(height: 8),
+                      InputDecorator(
+                        decoration: const InputDecoration(labelText: '邮箱服务'),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            key: const Key('oauth-provider'),
+                            value: provider,
+                            isExpanded: true,
+                            items: oauthProviderNames.entries
+                                .map(
+                                  (entry) => DropdownMenuItem(
+                                    value: entry.key,
+                                    child: Text(entry.value),
+                                  ),
+                                )
+                                .toList(),
+                            onChanged: locked
+                                ? null
+                                : (value) => selectProvider(value!),
                           ),
-                          const SizedBox(height: 18),
-                          editor(),
-                        ] else if (!loading)
-                          Align(
-                            alignment: Alignment.centerLeft,
-                            child: FilledButton.icon(
-                              onPressed: () => load(reload: true),
-                              icon: const Icon(Icons.refresh),
-                              label: const Text('重新载入配置'),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      editor(),
+                    ] else if (!loading)
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: FilledButton.icon(
+                          onPressed: () => load(reload: true),
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('重新载入配置'),
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ),
           ),
         ),
-      );
+      ),
+    ),
+  );
 
   Widget messageBox(String text, {Color color = Colors.blue}) => Container(
-        width: double.infinity,
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Text(text, style: const TextStyle(height: 1.6)),
-      );
+    width: double.infinity,
+    margin: const EdgeInsets.only(bottom: 12),
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: 0.08),
+      borderRadius: BorderRadius.circular(10),
+    ),
+    child: Text(text, style: const TextStyle(height: 1.6)),
+  );
 
   Widget editor() {
     final saved = current!;
@@ -537,7 +546,8 @@ class _OAuthSettingsPageState extends State<OAuthSettingsPage> {
                 autocorrect: false,
                 enableSuggestions: false,
                 autofillHints: const [],
-                validator: (value) => (value?.length ?? 0) > 8192 ||
+                validator: (value) =>
+                    (value?.length ?? 0) > 8192 ||
                         RegExp(r'[\x00-\x1f\x7f-\x9f]').hasMatch(value ?? '')
                     ? '密钥不能超过 8192 个字符或包含控制字符'
                     : null,

@@ -1,0 +1,64 @@
+import 'package:flutter/material.dart';
+
+/// Displays only message metadata returned by the server; no inferred auth badge.
+class MailHeader extends StatelessWidget {
+  final Map<String, dynamic> message;
+  const MailHeader({super.key, required this.message});
+  String addresses(dynamic values) => (values as List? ?? [])
+      .map((value) {
+        final address = value['address']?.toString() ?? '';
+        final name = value['name']?.toString().trim() ?? '';
+        return name.isEmpty ? address : '$name <$address>';
+      })
+      .join(', ');
+  String get received {
+    final raw = message['receivedAt']?.toString() ?? '';
+    final date = DateTime.tryParse(raw)?.toLocal();
+    if (date == null) return raw.isEmpty ? '未提供' : raw;
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${date.year}-${two(date.month)}-${two(date.day)} ${two(date.hour)}:${two(date.minute)}:${two(date.second)} ${date.timeZoneName}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final fromName = message['fromName']?.toString().trim() ?? '';
+    final fromAddress = message['fromAddress']?.toString() ?? '';
+    final cc = addresses(message['cc']);
+    return Column(
+      key: const Key('mail-header'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SelectableText(
+          message['subject']?.toString().isNotEmpty == true
+              ? message['subject']
+              : '（无主题）',
+          style: const TextStyle(
+            fontSize: 24,
+            fontWeight: FontWeight.w600,
+            height: 1.4,
+          ),
+        ),
+        const SizedBox(height: 20),
+        field(
+          '发件人',
+          fromName.isEmpty ? fromAddress : '$fromName <$fromAddress>',
+        ),
+        field('收件人', addresses(message['to'])),
+        if (cc.isNotEmpty) field('抄送', cc),
+        field('接收时间', received),
+      ],
+    );
+  }
+
+  Widget field(String label, String value) => Padding(
+    padding: const EdgeInsets.only(bottom: 7),
+    child: SelectableText(
+      '$label：${value.isEmpty ? '未提供' : value}',
+      style: const TextStyle(
+        fontSize: 12,
+        color: Color(0xff596a81),
+        height: 1.6,
+      ),
+    ),
+  );
+}
