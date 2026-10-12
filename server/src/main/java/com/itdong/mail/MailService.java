@@ -17,6 +17,8 @@ public class MailService {
   final OAuthService oauth;
   public static final long MAX_ATTACHMENT = 10 * 1024 * 1024;
   static final int BODY_RENDER_VERSION = 2;
+  static final String ACCOUNT_BUSY_MESSAGE =
+      "Wait for pending mailbox work and resolve uncertain operations before disconnecting this account";
 
   @Autowired
   MailService(Store store, Security security, OAuthService oauth) {
@@ -161,24 +163,123 @@ public class MailService {
 
   List<Map<String, Object>> accounts() {
     return store.db.queryForList("SELECT data FROM mail_account ORDER BY id").stream()
-        .map(
-            r -> {
-              var a = Json.decode((String) r.get("data"));
-              long unread =
-                  store
-                      .db
-                      .queryForList(
-                          "SELECT COALESCE(summary,data) AS data FROM mail_message WHERE"
-                              + " account_id=? AND folder='INBOX'",
-                          a.get("id"))
-                      .stream()
-                      .map(x -> Json.decode((String) x.get("data")))
-                      .filter(x -> !Boolean.TRUE.equals(x.get("isRead")))
-                      .count();
-              a.put("unreadCount", unread);
-              return a;
-            })
+        .map(row -> accountMetadata(Json.decode((String) row.get("data"))))
         .toList();
+  }
+
+  // Allowlist fields so future private account data cannot leak into API responses.
+  Map<String, Object> accountMetadata(Map<String, Object> account) {
+    var result = new LinkedHashMap<String, Object>();
+    for (String field : List.of("id", "provider", "email", "displayName", "status",
+        "lastSyncAt", "errorCode")) result.put(field, account.get(field));
+    String id = Json.string(account, "id");
+    long unread = store.db.queryForList(
+            "SELECT COALESCE(summary,data) AS data FROM mail_message WHERE account_id=? AND folder='INBOX'", id)
+        .stream().map(row -> Json.decode((String) row.get("data")))
+        .filter(message -> !Boolean.TRUE.equals(message.get("isRead"))).count();
+    boolean busy = accountJobs(id).stream().anyMatch(MailService::blocksDisconnect);
+    result.put("unreadCount", unread);
+    result.put("canDisconnect", !busy);
+    result.put("disconnectBlockedReason", busy ? ACCOUNT_BUSY_MESSAGE : null);
+    return result;
+  }
+
+  private List<Map<String, Object>> accountJobs(String id) {
+    return store.db.queryForList("SELECT kind,status,error_code FROM job WHERE account_id=?", id);
+  }
+
+  static boolean blocksDisconnect(Map<String, Object> job) {
+    // Fail closed for unknown kinds/states and uncertain provider outcomes.
+    String status = Objects.toString(job.get("status"), "");
+    return switch (Objects.toString(job.get("kind"), "")) {
+      case "SEND" -> !Set.of("ACCEPTED", "SENT_COPY_CONFIRMED", "FAILED").contains(status);
+      case "SYNC" -> !Set.of("SUCCEEDED", "FAILED").contains(status);
+      case "COMMAND" -> !Set.of("SUCCEEDED", "FAILED").contains(status)
+          || "RECONCILIATION_REQUIRED".equals(job.get("error_code"));
+      default -> true;
+    };
+  }
+
+  Map<String, Object> updateAccount(String id, Map<String, Object> body) {
+    if (!body.keySet().equals(Set.of("displayName"))
+        || !(body.get("displayName") instanceof String supplied))
+      throw ApiError.bad("Only displayName may be updated and must be a string");
+    String name = supplied.strip();
+    if (name.isBlank() || name.length() > 100
+        || supplied.codePoints().anyMatch(c -> Character.isISOControl(c)
+            || c == 0x2028 || c == 0x2029))
+      throw ApiError.bad("Display name must be one line with 1 to 100 characters");
+    return store.write(() -> {
+      var account = account(id);
+      account.put("displayName", name);
+      store.db.update("UPDATE mail_account SET data=? WHERE id=?", Json.encode(account), id);
+      store.changed("ACCOUNT", id, 1);
+      return accountMetadata(account);
+    });
+  }
+
+  void disconnectAccount(String id) {
+    // Job enqueue/claim and removal share this database mutation lock. No queued job
+    // can appear after the safety check or lose its account while a worker is active.
+    store.write(() -> {
+      account(id);
+      if (accountJobs(id).stream().anyMatch(MailService::blocksDisconnect))
+        throw new ApiError(409, "ACCOUNT_BUSY", ACCOUNT_BUSY_MESSAGE);
+      var candidates = new HashSet<String>();
+      for (var row : store.db.queryForList(
+          "SELECT id FROM attachment WHERE id IN (SELECT attachment_id FROM attachment_owner WHERE account_id=?)"
+              + " OR draft_id IN (SELECT id FROM draft WHERE account_id=?)", id, id))
+        candidates.add((String) row.get("id"));
+      for (String table : List.of("draft", "mail_message", "job")) {
+        String column = table.equals("job") ? "payload" : "data";
+        for (var row : store.db.queryForList(
+            "SELECT " + column + " AS data FROM " + table + " WHERE account_id=?", id))
+          candidates.addAll(attachmentIds(Json.decode((String) row.get("data"))));
+      }
+      store.db.update("DELETE FROM remote_attachment WHERE message_id IN"
+          + " (SELECT id FROM mail_message WHERE account_id=?)", id);
+      store.db.update("DELETE FROM mail_message WHERE account_id=?", id);
+      store.db.update("DELETE FROM draft WHERE account_id=?", id);
+      store.db.update("DELETE FROM job WHERE account_id=?", id);
+
+      // Draft account changes and frozen sends can share upload bytes across accounts.
+      var retained = new HashMap<String, String>();
+      for (String table : List.of("draft", "mail_message", "job")) {
+        String column = table.equals("job") ? "payload" : "data";
+        for (var row : store.db.queryForList("SELECT account_id," + column + " AS data FROM " + table))
+          for (String attachment : attachmentIds(Json.decode((String) row.get("data"))))
+            retained.putIfAbsent(attachment, (String) row.get("account_id"));
+      }
+      for (String attachment : candidates) {
+        if (!retained.containsKey(attachment))
+          store.db.update("DELETE FROM attachment WHERE id=?", attachment);
+        else {
+          // Transfer ownership before a surviving draft can itself be deleted.
+          store.db.update("UPDATE attachment_owner SET account_id=? WHERE attachment_id=? AND account_id=?",
+              retained.get(attachment), attachment, id);
+          claimAttachmentOwner(attachment, retained.get(attachment));
+        }
+      }
+      store.db.update("DELETE FROM mail_account WHERE id=?", id);
+      store.changed("ACCOUNT_DELETED", id, 0);
+      return null;
+    });
+  }
+
+  private static Set<String> attachmentIds(Map<String, Object> data) {
+    var ids = new HashSet<String>();
+    if (data.get("attachments") instanceof List<?> attachments)
+      for (Object value : attachments)
+        if (value instanceof Map<?, ?> attachment && attachment.get("id") instanceof String id)
+          ids.add(id);
+    return ids;
+  }
+
+  private void claimAttachmentOwner(String attachmentId, String accountId) {
+    // Old-version uploads have no ownership row. Claim only attributable local bytes.
+    store.db.update("INSERT INTO attachment_owner (attachment_id,account_id)"
+        + " SELECT id,? FROM attachment WHERE id=? AND NOT EXISTS"
+        + " (SELECT 1 FROM attachment_owner WHERE attachment_id=?)", accountId, attachmentId, attachmentId);
   }
 
   Map<String, Object> addImap(Map<String, Object> b) {
@@ -463,9 +564,9 @@ public class MailService {
   }
 
   Map<String, Object> sync(String id) {
-    account(id);
     return store.write(
         () -> {
+          account(id);
           var existing =
               store.db.queryForList(
                   "SELECT id,status FROM job WHERE kind='SYNC' AND account_id=? AND status IN"
@@ -660,7 +761,11 @@ public class MailService {
   void deleteDraft(String id) {
     store.write(
         () -> {
-          store.data("draft", id);
+          var draft = store.data("draft", id);
+          for (var row : store.db.queryForList("SELECT id FROM attachment WHERE draft_id=?", id))
+            claimAttachmentOwner((String) row.get("id"), Json.string(draft, "accountId"));
+          for (String attachment : attachmentIds(draft))
+            claimAttachmentOwner(attachment, Json.string(draft, "accountId"));
           store.db.update(
               "DELETE FROM draft WHERE id=?",
               id); /* Snapshot attachment references survive deletion. */
@@ -692,6 +797,7 @@ public class MailService {
             var a =
                 Json.map("id", aid, "fileName", name, "contentType", type, "size", bytes.length);
             store.db.update("INSERT INTO attachment VALUES(?,?,?,?,?)", aid, id, name, type, bytes);
+            claimAttachmentOwner(aid, Json.string(d, "accountId"));
             var attached = new ArrayList<>(old);
             attached.add(a);
             d.put("attachments", attached);

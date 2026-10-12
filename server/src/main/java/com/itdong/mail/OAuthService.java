@@ -94,6 +94,12 @@ public class OAuthService {
       String id = existing.isPresent() ? (String) existing.get().get("id") : Store.id();
       var a = Json.map("id", id, "provider", provider, "email", email, "displayName", email,
           "status", "NOT_SYNCED", "lastSyncAt", null, "unreadCount", 0, "errorCode", null);
+      // Refresh authorization without overwriting the owner's local mailbox label.
+      if (existing.isPresent()) {
+        var previous = Json.decode((String) existing.get().get("data"));
+        a.put("displayName", previous.getOrDefault("displayName", email));
+        a.put("lastSyncAt", previous.get("lastSyncAt"));
+      }
       var tokenData = secret(tokens);
       tokenData.put("configFingerprint", snapshot.fingerprint());
       String secret = security.encrypt(Json.encode(tokenData));

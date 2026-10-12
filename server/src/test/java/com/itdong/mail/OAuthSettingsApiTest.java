@@ -625,6 +625,10 @@ class OAuthSettingsApiTest {
   @Test
   void successfulReauthorizationUpdatesExistingAccountAndPreservesItsMessages() throws Exception {
     account("gmail-account", "GMAIL", true);
+    var labeled = store.data("mail_account", "gmail-account");
+    labeled.put("displayName", "My custom mailbox label");
+    labeled.put("lastSyncAt", "2026-01-01T00:00:00Z");
+    store.db.update("UPDATE mail_account SET data=? WHERE id='gmail-account'", Json.encode(labeled));
     store.db.update("INSERT INTO mail_message(id,account_id,remote_id,data,revision,received_at,folder) VALUES(?,?,?,?,?,?,?)", "existing-message", "gmail-account", "remote-id",
         Json.encode(Json.map("id", "existing-message", "bodyText", "existing content")), 1, "2026-01-01T00:00:00Z", "INBOX");
     try (var fixture = new ProviderFixture(null)) {
@@ -635,6 +639,8 @@ class OAuthSettingsApiTest {
       assertEquals("fixture-new-refresh", stored.get("refreshToken"));
       assertEquals(settings.effective("GMAIL").fingerprint(), stored.get("configFingerprint"));
       assertEquals("NOT_SYNCED", store.data("mail_account", "gmail-account").get("status"));
+      assertEquals("My custom mailbox label", store.data("mail_account", "gmail-account").get("displayName"));
+      assertEquals("2026-01-01T00:00:00Z", store.data("mail_account", "gmail-account").get("lastSyncAt"));
       assertEquals("existing content", store.data("mail_message", "existing-message").get("bodyText"));
       assertEquals(1, store.db.queryForObject("SELECT COUNT(*) FROM mail_message", Integer.class));
       assertFalse(call("GET", "/accounts", null, token).body().contains("fixture-new-"));

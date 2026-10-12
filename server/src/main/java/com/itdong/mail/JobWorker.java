@@ -29,7 +29,14 @@ public class JobWorker {
   public void pollConnectedAccounts() {
     if (!enabled || mail.security.demo) return;
     for (var account : mail.accounts())
-      if ("CONNECTED".equals(account.get("status"))) mail.sync((String) account.get("id"));
+      if ("CONNECTED".equals(account.get("status"))) {
+        try {
+          mail.sync((String) account.get("id"));
+        } catch (ApiError e) {
+          // Disconnect may finish after this polling snapshot was read.
+          if (e.status != 404) throw e;
+        }
+      }
   }
 
   public synchronized boolean runOne() {
@@ -70,17 +77,17 @@ public class JobWorker {
           (e instanceof ProviderException pe && pe.ambiguous())
               || (kind.equals("SEND") && submitting && !(e instanceof ProviderException));
       String status = ambiguous ? "UNKNOWN" : "FAILED";
-      finish(id, status, code);
-      if (kind.equals("SYNC"))
-        store.write(
-            () -> {
-              var a = mail.account(account);
-              a.put("status", "ERROR");
-              a.put("errorCode", code);
-              store.db.update("UPDATE mail_account SET data=? WHERE id=?", Json.encode(a), account);
-              store.changed("ACCOUNT", account, 1);
-              return null;
-            });
+      store.write(() -> {
+        finish(id, status, code);
+        if (kind.equals("SYNC")) {
+          var a = mail.account(account);
+          a.put("status", "ERROR");
+          a.put("errorCode", code);
+          store.db.update("UPDATE mail_account SET data=? WHERE id=?", Json.encode(a), account);
+          store.changed("ACCOUNT", account, 1);
+        }
+        return null;
+      });
     }
     return true;
   }

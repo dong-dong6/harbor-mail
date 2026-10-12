@@ -45,6 +45,17 @@ public class MailController {
     return Json.map("items", mail.accounts());
   }
 
+  @PatchMapping("/accounts/{id}")
+  Object updateAccount(@PathVariable String id, @RequestBody Map<String, Object> body) {
+    return mail.updateAccount(id, body);
+  }
+
+  @DeleteMapping("/accounts/{id}")
+  ResponseEntity<?> disconnectAccount(@PathVariable String id) {
+    mail.disconnectAccount(id);
+    return ResponseEntity.noContent().build();
+  }
+
   @PostMapping("/accounts/imap")
   Object account(@RequestBody Map<String, Object> b) {
     return mail.addImap(b);
