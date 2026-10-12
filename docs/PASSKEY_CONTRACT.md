@@ -36,3 +36,12 @@ The server uses `com.yubico:webauthn-server-core:2.10.1`, verified against Yubic
 - Errors: unavailable deployment 503/PASSKEY_UNAVAILABLE; rejected registration 400/INVALID_PASSKEY; rejected authentication 401/INVALID_PASSKEY; wrong management password 403/REAUTHENTICATION_FAILED; device bearer management 403/BROWSER_SESSION_REQUIRED; rate/resource limits 429. Expired/missing existing bearer remains 401. Start a new ceremony after a verification error; never automatically retry an uncertain verification response.
 
 Synthetic browser validation: launch a separate demo server with a fresh H2 database, `--mail.allowed-origin=http://localhost:<port>`, `--server.port=<port>`, and `--mail.worker-enabled=false`; browse to that exact localhost origin. Use only a virtual authenticator in an isolated browser profile. This does not authorize or perform a real credential enrollment.
+
+## Native Windows origin limitation
+
+The pinned passkeys_windows 0.1.5 bridge constructs the client-data origin as
+`https://` plus RP ID. Therefore native Windows Passkey currently requires the
+canonical HTTPS origin on the default port. A custom HTTPS port remains usable
+for password/pairing and local Windows Hello unlocking, but native Passkey will
+be rejected by exact server origin verification. Use the browser at the exact
+configured origin for that case; do not broaden the server origin allowlist.

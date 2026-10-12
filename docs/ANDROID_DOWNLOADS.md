@@ -37,7 +37,7 @@ release-signing configuration, update policy, and a separately reviewed manifest
 ## SDK requirements and license policy
 
 The job uses the official runner's preinstalled Android SDK. It checks actual files for
-Android platform 36, build-tools 36.0.0, NDK 29.0.14206865 and existing SDK license state before
+Android platforms 35/36, build-tools 36.0.0, NDK 29.0.14206865, CMake 3.31.5 and existing SDK license state before
 building. It does not run `sdkmanager`, accept SDK licenses, or install missing SDK components.
 Gradle SDK auto-download is disabled. If a runner lacks a prerequisite, the job fails with an
 explicit diagnostic and no downloadable artifact is published.
@@ -45,6 +45,12 @@ explicit diagnostic and no downloadable artifact is published.
 Flutter 3.47.5 normally selects NDK 28.2; current runner images do not necessarily contain it.
 `HARBOR_ANDROID_NDK_VERSION` selects the explicitly checked preinstalled NDK for CI. Without
 that environment variable, local builds retain Flutter's default. Build-tools remain pinned.
+Android library plugins have independent DSL settings: `jni` explicitly selects Flutter's NDK.
+The root Gradle script uses the supported AGP `finalizeDsl` callbacks for both application and
+library modules to apply `HARBOR_ANDROID_NDK_VERSION` and `HARBOR_ANDROID_CMAKE_VERSION`
+after plugin declarations, before native build configuration. This also avoids JNI's absent
+default CMake 3.10.2; CI selects and verifies the preinstalled 3.31.5. No pub-cache plugin files
+are modified. Without these environment variables, plugin defaults remain unchanged.
 Flutter comes from the official, SHA-256-pinned archive already used by the Web workflow.
 
 References:

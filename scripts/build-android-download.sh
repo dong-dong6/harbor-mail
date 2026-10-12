@@ -7,16 +7,20 @@ SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 : "${SDK:?An already provisioned Android SDK is required}"
 export ANDROID_HOME="$SDK" ANDROID_SDK_ROOT="$SDK"
 export HARBOR_ANDROID_NDK_VERSION="${HARBOR_ANDROID_NDK_VERSION:-29.0.14206865}"
+export HARBOR_ANDROID_CMAKE_VERSION="${HARBOR_ANDROID_CMAKE_VERSION:-3.31.5}"
+CMAKE_BIN="$SDK/cmake/$HARBOR_ANDROID_CMAKE_VERSION/bin/cmake"
 BUILD_TOOLS="$SDK/build-tools/36.0.0"
 for prerequisite in "$SDK/platforms/android-36/android.jar" \
+  "$SDK/platforms/android-35/android.jar" "$CMAKE_BIN" \
   "$SDK/ndk/$HARBOR_ANDROID_NDK_VERSION/source.properties" \
   "$SDK/licenses/android-sdk-license" "$BUILD_TOOLS/aapt" "$BUILD_TOOLS/apksigner"; do
   test -s "$prerequisite" || { echo 'Required preinstalled Android SDK component/license is missing. Provision it explicitly before retrying.' >&2; exit 1; }
 done
-test -x "$BUILD_TOOLS/aapt" && test -x "$BUILD_TOOLS/apksigner"
+test -x "$BUILD_TOOLS/aapt" && test -x "$BUILD_TOOLS/apksigner" && test -x "$CMAKE_BIN"
 # Keep a log of exact tools; no SDK manager or license-writing commands are used.
 "$BUILD_TOOLS/aapt" version
 "$BUILD_TOOLS/apksigner" version
+"$CMAKE_BIN" --version
 cat "$SDK/ndk/$HARBOR_ANDROID_NDK_VERSION/source.properties"
 VERSION="$(python3 "$ROOT/scripts/check-version.py")"
 VERSION_CODE="$(python3 - "$ROOT/client/pubspec.yaml" <<'PY'

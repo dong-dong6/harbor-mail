@@ -20,7 +20,7 @@ test-results/
 **/.idea/
 *.iml
 
-client/tool/node_modules/
+client/tool/node_modules
 
 server/src/main/resources/META-INF/public-web-assets.json
 

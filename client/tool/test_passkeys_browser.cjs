@@ -16,7 +16,8 @@ const {chromium} = require('playwright');
     args: ['--no-sandbox', '--disable-dev-shm-usage']});
   try {
     const page = await browser.newPage();
-    await page.goto(base.origin, {waitUntil: 'domcontentloaded'});
+    // A same-origin health document provides localhost WebAuthn context without a Flutter build.
+    await page.goto(`${base}/health`, {waitUntil: 'domcontentloaded'});
     const cdp = await page.context().newCDPSession(page);
     await cdp.send('WebAuthn.enable');
     await cdp.send('WebAuthn.addVirtualAuthenticator', {options: {
