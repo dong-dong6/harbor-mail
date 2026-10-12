@@ -1,31 +1,51 @@
 {
-  "version": "0.3.1",
-  "sourceBaseCommit": "c074f282e48e124cf0155ce81bf6d70091113afd",
-  "publicationState": "Development fixes; exact-commit CI and artifact verification pending",
+  "version": "0.3.2",
+  "sourceBaseCommit": "33ee2c3fe113cb8fb2f362eda4efa2b75363e1a4",
+  "publicationState": "Source-stage verification below; exact release evidence is recorded by ciSourceCommit/ciRunId when CI packages this source",
   "java": "21.0.12.1",
   "flutter": "3.47.5",
   "maven": "3.9.9",
-  "realHardwareAuthentication": "not_run",
-  "realDeviceEnrollment": "not_performed",
-  "productionDeployment": "not_performed",
-  "androidSigning": "Ephemeral development debug signature; no fixed production key; cross-CI in-place update may be incompatible",
-  "flutterAnalyze": "passed local integrated source",
-  "flutterTests": 437,
+  "flutterAnalyze": "passed final local integrated source",
+  "flutterTests": 529,
   "h2": {
-    "tests": 379,
+    "tests": 395,
     "failures": 0,
     "errors": 0,
     "skipped": 0
   },
-  "nativeApiCompilation": "passed 5 Java files plus MainActivity Kotlin against actual Android/AndroidX/Flutter APIs; not an APK build",
+  "postgresql": {
+    "tests": 395,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "webReleaseBuild": "passed final local integrated source",
+  "nativeApiCompilation": "passed 7 application Java sources plus MainActivity Kotlin against actual Android/AndroidX/Flutter APIs; excludes generated plugin registration and is not an APK build",
   "nativePolicyAssertions": {
     "updater": 82,
-    "sessionVault": 44
+    "sessionVault": 44,
+    "deviceSessionVault": 58
   },
-  "webReleaseBuild": "passed local",
-  "browserEndToEnd": "new desktop/mobile compiled-Web checks added; exact-commit Chromium CI pending",
-  "postgresql": "pending exact-commit CI",
-  "nativeAndroidBuild": "pending exact-commit CI",
-  "nativeWindowsBuild": "pending exact-commit CI",
-  "loginVisualHarness": "Measured Flutter semantic render frames; native input box-model diagnostics retained; real browser CI pending"
+  "localBrowserExecution": "blocked before assertions by Chromium socket creation denial; no local browser success claimed",
+  "browserEndToEnd": "requires exact-commit CI; local browser cannot start",
+  "nativeAndroidBuild": "requires exact-commit CI; no complete local Android SDK",
+  "nativeWindowsBuild": "requires exact-commit CI",
+  "realHardwareAuthentication": "not_run",
+  "realDeviceEnrollment": "not_performed",
+  "androidSigning": "Ephemeral development debug signature; no new permanent key; cross-CI in-place update may be incompatible",
+  "deviceSessions": {
+    "accessSecondsDefault": 900,
+    "idleDaysDefault": 30,
+    "absoluteDaysDefault": 365,
+    "consent": "explicit remember-device login or owner QR approval",
+    "biometricProtection": "separate opt-in; default off"
+  },
+  "schemaMigration": "V8__device_refresh_sessions.sql",
+  "localIntegratedJar": {
+    "sha256": "afbd403b9e8f251e4ac6e10cf8a3cc2eff0c2c8564e918d0ec54af3e77551ae2",
+    "bytes": 89681392,
+    "contents": "current Web + Java only; no APK",
+    "syntheticDemoChecks": 10,
+    "staticAssetPathsVerified": 8
+  }
 }

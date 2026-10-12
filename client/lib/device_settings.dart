@@ -28,11 +28,14 @@ class DeviceSettingsPageState extends State<DeviceSettingsPage> {
   final _password = TextEditingController();
   Timer? _pollTimer;
   String? _sessionToken;
+  ApiSessionCoordinator? _sessionCoordinator;
+  int? _sessionEpoch;
   int _generation = 0, _listGeneration = 0;
   int? _pollRequestGeneration;
   bool _closed = false, _creating = false, _busy = false;
   bool _loading = true, _confirming = false, _matched = false;
   bool _approvalUncertain = false, _statusFailed = false;
+  bool _rememberDevice = true;
   String _error = '', _notice = '', _listError = '';
   String? _qrPayload;
   _OwnerPairing? _pairing;
@@ -42,12 +45,19 @@ class DeviceSettingsPageState extends State<DeviceSettingsPage> {
   bool get _active => _pairing?.isPending == true;
   bool get protectsDocumentExit => _active || _creating || _busy;
   bool get _hasSession =>
-      !_closed && _sessionToken != null && widget.api.token == _sessionToken;
+      !_closed &&
+      (_sessionCoordinator == null
+          ? _sessionToken != null && widget.api.token == _sessionToken
+          : identical(widget.api.deviceSession, _sessionCoordinator) &&
+                _sessionCoordinator!.durable &&
+                _sessionCoordinator!.epoch == _sessionEpoch);
 
   @override
   void initState() {
     super.initState();
     _sessionToken = widget.api.token;
+    _sessionCoordinator = widget.api.deviceSession;
+    _sessionEpoch = _sessionCoordinator?.epoch;
     _password.addListener(_changed);
     _loadDevices();
   }
@@ -59,6 +69,8 @@ class DeviceSettingsPageState extends State<DeviceSettingsPage> {
       _discardPairing();
       _listGeneration++;
       _sessionToken = widget.api.token;
+      _sessionCoordinator = widget.api.deviceSession;
+      _sessionEpoch = _sessionCoordinator?.epoch;
       _devices = [];
       _loadDevices();
     }
@@ -104,6 +116,7 @@ class DeviceSettingsPageState extends State<DeviceSettingsPage> {
     _qrPayload = null;
     _pairing = null;
     _matched = false;
+    _rememberDevice = true;
     _approvalUncertain = false;
     _statusFailed = false;
     _password.clear();
@@ -366,7 +379,11 @@ class DeviceSettingsPageState extends State<DeviceSettingsPage> {
       final result = await widget.api.request(
         'POST',
         '/auth/device-pairings/${pairing.id}/approve',
-        body: {'password': password, 'confirmationCode': pairing.code},
+        body: {
+          'password': password,
+          'confirmationCode': pairing.code,
+          'rememberDevice': _rememberDevice,
+        },
         followRedirects: false,
       );
       if (!_current(generation)) return;
@@ -503,7 +520,9 @@ class DeviceSettingsPageState extends State<DeviceSettingsPage> {
                       color: Colors.amber,
                       key: 'device-owner-warning',
                     ),
-                    const Text('本阶段登录只保存在内存中，最长 8 小时。关闭或重启应用后需要重新连接。'),
+                    const Text(
+                      '你可在批准时选择是否记住新设备。记住后会自动续期；默认连续 30 天未使用或满 365 天需重新登录，也可随时撤销。',
+                    ),
                     const SizedBox(height: 20),
                     if (_error.isNotEmpty) _message(_error, color: Colors.red),
                     if (_notice.isNotEmpty) _message(_notice),
@@ -610,6 +629,20 @@ class DeviceSettingsPageState extends State<DeviceSettingsPage> {
                       ? null
                       : (value) => setState(() => _matched = value == true),
                   title: const Text('我已在新设备核对确认码，且两边完全一致'),
+                  controlAffinity: ListTileControlAffinity.leading,
+                ),
+                CheckboxListTile(
+                  key: const Key('device-remember-device'),
+                  contentPadding: EdgeInsets.zero,
+                  value: _rememberDevice,
+                  onChanged: _busy || _approvalUncertain || _statusFailed
+                      ? null
+                      : (value) =>
+                            setState(() => _rememberDevice = value == true),
+                  title: const Text('记住此设备'),
+                  subtitle: const Text(
+                    '允许此设备加密保存登录并自动续期，拥有此账户的完整访问权限。默认连续 30 天未使用或满 365 天需重新登录；取消勾选则仅本次登录，最长 8 小时。指纹锁由新设备另行开启。',
+                  ),
                   controlAffinity: ListTileControlAffinity.leading,
                 ),
                 TextField(

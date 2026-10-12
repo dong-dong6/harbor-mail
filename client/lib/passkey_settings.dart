@@ -25,6 +25,8 @@ class PasskeySettingsPanelState extends State<PasskeySettingsPanel> {
   late PasskeyApi _api;
   PasskeyFlow? _flow;
   String? _token;
+  ApiSessionCoordinator? _sessionCoordinator;
+  int? _sessionEpoch;
   List<PasskeyEntry> _items = [];
   bool _loading = true, _busy = false, _available = false, _closed = false;
   bool _confirming = false;
@@ -32,13 +34,20 @@ class PasskeySettingsPanelState extends State<PasskeySettingsPanel> {
   String _error = '', _notice = '';
   bool get protectsDocumentExit => _busy;
   bool get _hasSession =>
-      !_closed && _token != null && widget.api.token == _token;
+      !_closed &&
+      (_sessionCoordinator == null
+          ? _token != null && widget.api.token == _token
+          : identical(widget.api.deviceSession, _sessionCoordinator) &&
+                _sessionCoordinator!.durable &&
+                _sessionCoordinator!.epoch == _sessionEpoch);
 
   @override
   void initState() {
     super.initState();
     _api = PasskeyApi(widget.api);
     _token = widget.api.token;
+    _sessionCoordinator = widget.api.deviceSession;
+    _sessionEpoch = _sessionCoordinator?.epoch;
     _load();
   }
 
@@ -47,9 +56,11 @@ class PasskeySettingsPanelState extends State<PasskeySettingsPanel> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.api != widget.api ||
         oldWidget.authenticator != widget.authenticator ||
-        widget.api.token != _token) {
+        !_hasSession) {
       _invalidate();
       _token = widget.api.token;
+      _sessionCoordinator = widget.api.deviceSession;
+      _sessionEpoch = _sessionCoordinator?.epoch;
       _api = PasskeyApi(widget.api);
       _items = [];
       _load();
@@ -263,6 +274,10 @@ class PasskeySettingsPanelState extends State<PasskeySettingsPanel> {
       ),
       const SizedBox(height: 8),
       const Text('只在你信任的设备上添加。同步的通行密钥可能在同一密码管理器的其他设备上使用。密码登录始终保留。'),
+      if (widget.api.deviceSession?.durable == true) ...[
+        const SizedBox(height: 8),
+        const Text('添加或删除通行密钥请在网页临时登录后操作；当前设备可正常使用已注册通行密钥登录。'),
+      ],
       const SizedBox(height: 20),
       if (_loading) const LinearProgressIndicator(),
       if (!_loading && !_available) const Text('服务器尚未启用通行密钥，或可信域名关联尚未配置。'),

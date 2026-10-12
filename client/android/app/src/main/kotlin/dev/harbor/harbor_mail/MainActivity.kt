@@ -5,6 +5,7 @@ import io.flutter.embedding.engine.FlutterEngine
 
 class MainActivity : FlutterFragmentActivity() {
     private var sessionVault: SessionVaultBridge? = null
+    private var deviceSessionVault: DeviceSessionVaultBridge? = null
     private var deviceInfo: DeviceInfoBridge? = null
     private var updates: AndroidUpdateBridge? = null
 
@@ -12,10 +13,13 @@ class MainActivity : FlutterFragmentActivity() {
         super.configureFlutterEngine(flutterEngine)
         updates = AndroidUpdateBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         sessionVault = SessionVaultBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        deviceSessionVault = DeviceSessionVaultBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         deviceInfo = DeviceInfoBridge(flutterEngine.dartExecutor.binaryMessenger)
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        deviceSessionVault?.detach()
+        deviceSessionVault = null
         sessionVault?.detach()
         sessionVault = null
         deviceInfo?.detach()

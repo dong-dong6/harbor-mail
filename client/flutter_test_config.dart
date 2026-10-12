@@ -17,5 +17,16 @@ Future<void> testExecutable(FutureOr<void> Function() testMain) async {
       },
     },
   );
+  binding.defaultBinaryMessenger.setMockMethodCallHandler(
+    const MethodChannel('dev.harbor.mail/device_session_vault'),
+    (call) async => <String, Object>{
+      'status': switch (call.method) {
+        'status' || 'clear' => 'empty',
+        'cancel' => 'canceled',
+        'lock' => 'locked',
+        _ => 'unavailable',
+      },
+    },
+  );
   await testMain();
 }

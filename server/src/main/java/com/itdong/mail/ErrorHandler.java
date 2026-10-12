@@ -24,6 +24,8 @@ public class ErrorHandler {
       status = 404;
       code = "NOT_FOUND";
       message = "Resource not found";
+    } else if (e instanceof org.springframework.web.HttpMediaTypeNotSupportedException) {
+      status = 415; code = "INVALID_CONTENT_TYPE"; message = "Use application/json";
     } else if (e instanceof MaxUploadSizeExceededException) {
       status = 413;
       code = "ATTACHMENT_TOO_LARGE";
@@ -43,11 +45,12 @@ public class ErrorHandler {
               "Request {} failed with {}",
               r.getAttribute("requestId"),
               e.getClass().getSimpleName());
-    return ResponseEntity.status(status)
-        .body(
-            Json.map(
-                "error",
-                Json.map(
-                    "code", code, "message", message, "requestId", r.getAttribute("requestId"))));
+    var error = Json.map("code", code, "message", message, "requestId", r.getAttribute("requestId"));
+    var response = ResponseEntity.status(status);
+    if (e instanceof ApiError a && a.retryAfterSeconds > 0) {
+      error.put("retryAfterSeconds", a.retryAfterSeconds);
+      response.header("Retry-After", Integer.toString(a.retryAfterSeconds));
+    }
+    return response.body(Json.map("error", error));
   }
 }

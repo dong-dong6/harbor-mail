@@ -18,6 +18,7 @@ class PairingSnapshot {
     required this.accountName,
     required this.permission,
     this.confirmationCode,
+    this.rememberDevice = false,
   });
 
   final String pairingId;
@@ -26,12 +27,13 @@ class PairingSnapshot {
   final String accountName;
   final String permission;
   final String? confirmationCode;
+  final bool rememberDevice;
 
   bool get isTerminal => const {
-        PairingState.redeemed,
-        PairingState.rejected,
-        PairingState.expired,
-      }.contains(state);
+    PairingState.redeemed,
+    PairingState.rejected,
+    PairingState.expired,
+  }.contains(state);
 
   factory PairingSnapshot.fromJson(dynamic data) {
     final map = _object(data);
@@ -40,6 +42,9 @@ class PairingSnapshot {
       (value) => value.name.toUpperCase() == rawState,
     );
     if (state.length != 1) throw _invalidResponse();
+    if (map['rememberDevice'] != null && map['rememberDevice'] is! bool) {
+      throw _invalidResponse();
+    }
     final code = map['confirmationCode'];
     if (code != null &&
         (code is! String || !RegExp(r'^[0-9]{6}$').hasMatch(code))) {
@@ -56,12 +61,14 @@ class PairingSnapshot {
       accountName: _string(map, 'accountName', max: 320),
       permission: _permission(map),
       confirmationCode: code as String?,
+      rememberDevice: map['rememberDevice'] == true,
     );
   }
 }
 
 /// The owner of a successful result owns [api] and must dispose it on logout.
-/// Access is memory-only: no token is saved by this object or pairing transport.
+/// No token is saved by this transport. The recipient persists a refresh family
+/// only when the authenticated owner explicitly approved remembered access.
 class DevicePairingResult {
   const DevicePairingResult({
     required this.api,
@@ -70,6 +77,9 @@ class DevicePairingResult {
     required this.deviceId,
     required this.accountName,
     required this.permission,
+    this.refreshToken,
+    this.refreshExpiresAt,
+    this.sessionExpiresAt,
   });
 
   final MailApi api;
@@ -78,7 +88,22 @@ class DevicePairingResult {
   final String deviceId;
   final String accountName;
   final String permission;
+  final String? refreshToken;
+  final DateTime? refreshExpiresAt, sessionExpiresAt;
+  bool get remembered => refreshToken != null;
   String get accessToken => api.token ?? '';
+  Map<String, dynamic> get sessionResponse => {
+    'accessToken': accessToken,
+    'expiresAt': expiresAt.toIso8601String(),
+    'deviceId': deviceId,
+    'accountName': accountName,
+    'permission': permission,
+    if (refreshToken != null) 'refreshToken': refreshToken,
+    if (refreshExpiresAt != null)
+      'refreshExpiresAt': refreshExpiresAt!.toIso8601String(),
+    if (sessionExpiresAt != null)
+      'sessionExpiresAt': sessionExpiresAt!.toIso8601String(),
+  };
 }
 
 typedef PairingSession = DevicePairingResult;
@@ -87,7 +112,7 @@ typedef PairingSession = DevicePairingResult;
 /// Never accepts or inherits an existing MailApi, cookie jar, or bearer token.
 class DevicePairingApi {
   DevicePairingApi({required this.profile, http.Client? client})
-      : _client = client ?? http.Client();
+    : _client = client ?? http.Client();
 
   final ServerProfile profile;
   final http.Client _client;
@@ -102,8 +127,10 @@ class DevicePairingApi {
   final Stopwatch _pollClock = Stopwatch();
   final Stopwatch _attemptClock = Stopwatch();
 
-  Future<PairingSnapshot> claim(PairingQr qr,
-      {required String deviceName}) async {
+  Future<PairingSnapshot> claim(
+    PairingQr qr, {
+    required String deviceName,
+  }) async {
     _checkActive();
     if (_claimStarted || qr.profile != profile) {
       throw ApiException('INVALID_PAIRING', '请重新扫描配对二维码');
@@ -137,8 +164,9 @@ class DevicePairingApi {
       if (snapshot.pairingId != qr.pairingId ||
           snapshot.state != PairingState.claimed ||
           !snapshot.expiresAt.isAfter(DateTime.now()) ||
-          snapshot.expiresAt
-              .isAfter(DateTime.now().add(const Duration(seconds: 135)))) {
+          snapshot.expiresAt.isAfter(
+            DateTime.now().add(const Duration(seconds: 135)),
+          )) {
         throw _invalidResponse();
       }
       _snapshot = snapshot;
@@ -196,13 +224,45 @@ class DevicePairingApi {
     final epoch = _generation;
     final proof = _proof();
     try {
-      final map =
-          _object(await _request('/auth/device-pairings/redeem', proof));
+      final map = _object(
+        await _request('/auth/device-pairings/redeem', proof),
+      );
       _checkActive(epoch);
       final token = _string(map, 'accessToken', max: 4096);
       if (RegExp(r'\s').hasMatch(token)) throw _invalidResponse();
       final serverExpiresAt = _date(map);
-      final localDeadline = DateTime.now().add(const Duration(hours: 8));
+      final remembered = map['refreshToken'] != null;
+      if (!remembered &&
+          (map['refreshExpiresAt'] != null ||
+              map['sessionExpiresAt'] != null)) {
+        throw _invalidResponse();
+      }
+      if (remembered != _snapshot!.rememberDevice) throw _invalidResponse();
+      final refreshToken = remembered
+          ? _string(map, 'refreshToken', max: 4096)
+          : null;
+      final refreshExpiresAt = remembered
+          ? _date(map, 'refreshExpiresAt')
+          : null;
+      final sessionExpiresAt = remembered
+          ? _date(map, 'sessionExpiresAt')
+          : null;
+      final now = DateTime.now().toUtc();
+      if (remembered &&
+          (!RegExp(r'^[A-Za-z0-9_-]{43}$').hasMatch(refreshToken!) ||
+              !refreshExpiresAt!.isAfter(now) ||
+              refreshExpiresAt.isAfter(
+                now.add(const Duration(days: 90, seconds: 15)),
+              ) ||
+              sessionExpiresAt!.isBefore(refreshExpiresAt) ||
+              sessionExpiresAt.isAfter(
+                now.add(const Duration(days: 730, seconds: 15)),
+              ))) {
+        throw _invalidResponse();
+      }
+      final localDeadline = now.add(
+        remembered ? const Duration(minutes: 60) : const Duration(hours: 8),
+      );
       final expiresAt = serverExpiresAt.isAfter(localDeadline)
           ? localDeadline
           : serverExpiresAt;
@@ -211,8 +271,9 @@ class DevicePairingApi {
       final permission = _permission(map);
       if (accountName != _snapshot!.accountName ||
           !serverExpiresAt.isAfter(DateTime.now()) ||
-          serverExpiresAt
-              .isAfter(localDeadline.add(const Duration(seconds: 15)))) {
+          serverExpiresAt.isAfter(
+            localDeadline.add(const Duration(seconds: 15)),
+          )) {
         throw _invalidResponse();
       }
       // Separate transport and token scope. Disposing this pairing transport
@@ -225,6 +286,9 @@ class DevicePairingApi {
         deviceId: deviceId,
         accountName: accountName,
         permission: permission,
+        refreshToken: refreshToken,
+        refreshExpiresAt: refreshExpiresAt,
+        sessionExpiresAt: sessionExpiresAt,
       );
     } finally {
       _verifier = null;
@@ -233,9 +297,9 @@ class DevicePairingApi {
   }
 
   Map<String, String> _proof() => {
-        'pairingId': _pairingId!,
-        'codeVerifier': _verifier!,
-      };
+    'pairingId': _pairingId!,
+    'codeVerifier': _verifier!,
+  };
 
   void _checkProof() {
     _checkActive();
@@ -303,17 +367,19 @@ class DevicePairingApi {
       }
       if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
         final error = data is Map ? data['error'] : null;
-        final code = error is Map &&
+        final code =
+            error is Map &&
                 error['code'] is String &&
                 RegExp(r'^[A-Z0-9_]{1,64}$').hasMatch(error['code'])
             ? error['code'] as String
             : 'HTTP_${streamed.statusCode}';
         // Do not reflect arbitrary server text (which may contain the secret).
         throw ApiException(
-            code,
-            streamed.statusCode == 429
-                ? '配对请求过于频繁，请稍后再试'
-                : '配对未完成，请返回网页检查状态或重新生成二维码');
+          code,
+          streamed.statusCode == 429
+              ? '配对请求过于频繁，请稍后再试'
+              : '配对未完成，请返回网页检查状态或重新生成二维码',
+        );
       }
       return data;
     } on ApiException {
@@ -363,8 +429,8 @@ String _string(Map<String, dynamic> map, String key, {required int max}) {
   return value;
 }
 
-DateTime _date(Map<String, dynamic> map) {
-  final raw = _string(map, 'expiresAt', max: 40);
+DateTime _date(Map<String, dynamic> map, [String key = 'expiresAt']) {
+  final raw = _string(map, key, max: 40);
   final parsed = DateTime.tryParse(raw);
   if (parsed == null || !parsed.isUtc) throw _invalidResponse();
   return parsed;

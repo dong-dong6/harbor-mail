@@ -31,7 +31,11 @@ import 'local_unlock.dart';
 import 'android_downloads.dart';
 import 'login_layout.dart';
 import 'session_vault.dart';
+import 'device_session.dart';
+import 'device_session_vault.dart';
+import 'device_info.dart';
 import 'device_security_card.dart';
+import 'device_privacy_gate.dart';
 import 'passkey_api.dart';
 import 'passkey_login.dart';
 import 'passkey_settings.dart';
@@ -53,6 +57,7 @@ class MailApp extends StatefulWidget {
   final MailNavigation? navigation;
   final LocalUnlockController? unlockController;
   final SessionVault? sessionVault;
+  final DeviceSessionVault? deviceSessionVault;
   final MailApi Function(String)? recoveryApiFactory;
   const MailApp({
     super.key,
@@ -60,6 +65,7 @@ class MailApp extends StatefulWidget {
     this.navigation,
     this.unlockController,
     this.sessionVault,
+    this.deviceSessionVault,
     this.recoveryApiFactory,
   });
   @override
@@ -107,6 +113,7 @@ class _SessionRouteObserver extends NavigatorObserver {
 class _MailAppState extends State<MailApp> {
   final mailboxKey = GlobalKey<MailboxState>();
   final sessionRoutes = _SessionRouteObserver();
+  final durablePrivacy = ValueNotifier<int>(0);
   late final initialApi = widget.api ?? MailApi();
   late final unlock =
       widget.unlockController ??
@@ -114,6 +121,7 @@ class _MailAppState extends State<MailApp> {
   @override
   void dispose() {
     if (widget.unlockController == null) unlock.dispose();
+    durablePrivacy.dispose();
     super.dispose();
   }
 
@@ -126,7 +134,18 @@ class _MailAppState extends State<MailApp> {
     builder: (context, child) => LocalUnlockGate(
       controller: unlock,
       onSignOut: () => mailboxKey.currentState?.signoutFromLock(),
-      child: child ?? const SizedBox.shrink(),
+      child: ValueListenableBuilder<int>(
+        valueListenable: durablePrivacy,
+        child: child ?? const SizedBox.shrink(),
+        builder: (context, _, navigator) {
+          final mailbox = mailboxKey.currentState;
+          return DevicePrivacyGate(
+            locked: mailbox?.durableLocked ?? false,
+            shield: mailbox?.durableLockView() ?? const SizedBox.shrink(),
+            child: navigator!,
+          );
+        },
+      ),
     ),
     theme: ThemeData(
       useMaterial3: true,
@@ -159,8 +178,10 @@ class _MailAppState extends State<MailApp> {
       navigation: widget.navigation,
       localUnlock: unlock,
       sessionVault: widget.sessionVault,
+      deviceSessionVault: widget.deviceSessionVault,
       recoveryApiFactory: widget.recoveryApiFactory,
       clearTransientRoutes: sessionRoutes.clearTransientRoutes,
+      onDevicePrivacyChanged: () => durablePrivacy.value++,
     ),
   );
 }
@@ -170,16 +191,20 @@ class Mailbox extends StatefulWidget {
   final MailNavigation? navigation;
   final LocalUnlockController? localUnlock;
   final SessionVault? sessionVault;
+  final DeviceSessionVault? deviceSessionVault;
   final MailApi Function(String)? recoveryApiFactory;
   final VoidCallback? clearTransientRoutes;
+  final VoidCallback? onDevicePrivacyChanged;
   const Mailbox({
     super.key,
     required this.api,
     this.navigation,
     this.localUnlock,
     this.sessionVault,
+    this.deviceSessionVault,
     this.recoveryApiFactory,
     this.clearTransientRoutes,
+    this.onDevicePrivacyChanged,
   });
   @override
   MailboxState createState() => MailboxState();
@@ -190,6 +215,43 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _appForeground = state == AppLifecycleState.resumed;
+    final coordinator = deviceSession;
+    if (state == AppLifecycleState.resumed) {
+      for (final waiter in _foregroundWaiters.toList()) {
+        if (!waiter.isCompleted) waiter.complete();
+      }
+      _foregroundWaiters.clear();
+    }
+    if (coordinator == null) return;
+    if (state == AppLifecycleState.resumed) {
+      if (_deviceAuthenticationOwned) {
+        coordinator.authenticationForeground();
+        if (mounted) setState(() {});
+      } else if (coordinator.metadata?.biometricEnabled != true &&
+          _ownedPicker == null) {
+        unawaited(resumeDeviceSession());
+      } else if (mounted) {
+        setState(() {});
+      }
+    } else if (state == AppLifecycleState.detached ||
+        !(_deviceAuthenticationOwned &&
+            (_biometricConfiguration || coordinator.locked))) {
+      // An owned CryptoObject prompt may pause/stop for device PIN entry.
+      // Native code retains only ciphertext and cannot release the DEK until
+      // RESUMED with an unlocked keyguard. Never exempt a refresh/network wait.
+      sessionGeneration++;
+      generation++;
+      detailGeneration++;
+      unawaited(coordinator.suspend());
+      if (mounted) setState(() {});
+    } else {
+      coordinator.pauseForAuthentication();
+      sessionGeneration++;
+      generation++;
+      detailGeneration++;
+      if (mounted) setState(() {});
+    }
+    updateDevicePrivacy();
   }
 
   late final navigation = widget.navigation ?? MailNavigation();
@@ -201,6 +263,100 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
   final profileStore = ServerProfileStore();
   late final SessionVault sessionVault =
       widget.sessionVault ?? PlatformSessionVault();
+  late final DeviceSessionVault deviceSessionVault =
+      widget.deviceSessionVault ?? PlatformDeviceSessionVault();
+  DeviceSessionCoordinator? deviceSession;
+  DeviceSessionMetadata? rememberedMetadata;
+  bool rememberDevice = true;
+  bool _loggingOut = false, _deviceClearFailed = false;
+  bool _acceptingPasskey = false;
+  Object? _ownedPicker;
+  final _foregroundWaiters = <Completer<void>>{};
+
+  void updateDevicePrivacy() {
+    if (mounted) widget.onDevicePrivacyChanged?.call();
+  }
+
+  void cancelPickerContinuation() {
+    _ownedPicker = null;
+    for (final waiter in _foregroundWaiters.toList()) {
+      if (!waiter.isCompleted) waiter.complete();
+    }
+    _foregroundWaiters.clear();
+  }
+
+  Future<ExternalPickerResult<T>> runExternalPicker<T>(
+    Future<T> Function() pick,
+  ) async {
+    final coordinator = deviceSession;
+    final metadata = coordinator?.metadata;
+    if (coordinator == null ||
+        metadata == null ||
+        metadata.biometricEnabled ||
+        !logged ||
+        durableLocked ||
+        (widget.localUnlock?.enabled ?? false)) {
+      return ExternalPickerResult(await pick());
+    }
+    if (_ownedPicker != null) throw ApiException('PICKER_BUSY', '请先完成当前文件选择');
+    final identity = Object();
+    final source = api;
+    final login = loginGeneration;
+    final owner = metadata.accountId;
+    final family = metadata.familyId;
+    final profile = metadata.profile;
+    _ownedPicker = identity;
+    bool current() =>
+        mounted &&
+        logged &&
+        login == loginGeneration &&
+        identical(_ownedPicker, identity) &&
+        identical(api, source) &&
+        identical(deviceSession, coordinator) &&
+        coordinator.durable &&
+        coordinator.profile == profile &&
+        coordinator.metadata?.accountId == owner &&
+        coordinator.metadata?.familyId == family &&
+        coordinator.metadata?.biometricEnabled == false &&
+        !(widget.localUnlock?.enabled ?? false) &&
+        !_loggingOut;
+    try {
+      final value = await pick();
+      if (!current()) throw ApiException('STALE_SESSION', '登录已更改，请重新选择附件');
+      while (!_appForeground) {
+        final resumed = Completer<void>();
+        _foregroundWaiters.add(resumed);
+        await resumed.future;
+        if (!current()) throw ApiException('STALE_SESSION', '登录已更改，请重新选择附件');
+      }
+      if (coordinator.locked || !coordinator.foreground) {
+        await coordinator.resume(expectedFamilyId: family);
+      }
+      if (!current() || !_appForeground || durableLocked) {
+        throw ApiException('STALE_SESSION', '请返回应用后重新选择附件');
+      }
+      updateDevicePrivacy();
+      return ExternalPickerResult(value, reauthorize: true);
+    } finally {
+      if (identical(_ownedPicker, identity)) {
+        final stillCurrent = current();
+        _ownedPicker = null;
+        if (stillCurrent && _appForeground && coordinator.locked) {
+          unawaited(resumeDeviceSession());
+        }
+      }
+      updateDevicePrivacy();
+    }
+  }
+
+  bool _deviceAuthenticationOwned = false, _biometricConfiguration = false;
+  bool get hasDurableSession => deviceSession?.durable ?? false;
+  bool get durableLocked =>
+      hasDurableSession &&
+      (deviceSession!.locked ||
+          !deviceSession!.foreground ||
+          !_appForeground ||
+          (_deviceAuthenticationOwned && vaultBusy));
   VaultMetadata? savedSessionMetadata;
   bool savedCurrentSession = false, vaultBusy = false;
   String vaultMessage = '';
@@ -214,6 +370,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
   Object? _composeDialogIdentity;
   bool _wasLocked = false;
   final serverAddress = TextEditingController();
+  final rememberedDeviceName = TextEditingController(text: fallbackDeviceName);
   MailRoute get currentRoute => MailRoute(
     messageId: selected?['id']?.toString(),
     account: account,
@@ -326,7 +483,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
 
   Future<bool> canLeave() async {
     final session = sessionGeneration;
-    if (logged && api.token == null) {
+    if (logged && api.token == null && !hasDurableSession) {
       endSession(message: '登录已失效，请重新登录');
       return false;
     }
@@ -463,8 +620,16 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
         ? widget.api.base
         : '';
     if (!kIsWeb) {
-      unawaited(restoreServerProfile());
+      unawaited(restoreServerProfile().then((_) => discoverRememberedDevice()));
       unawaited(discoverSavedSession());
+      final beforeName = rememberedDeviceName.text;
+      unawaited(
+        PlatformDeviceInfo().suggestedName().then((name) {
+          if (mounted && !busy && rememberedDeviceName.text == beforeName) {
+            setState(() => rememberedDeviceName.text = name);
+          }
+        }),
+      );
     }
     final oauthReturned = consumeOAuthReturn();
     pendingRoute = MailRoute.parse(navigation.location);
@@ -494,9 +659,10 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
   bool isCurrentSession(int epoch) =>
       mounted &&
       logged &&
-      api.token != null &&
+      (api.token != null || hasDurableSession) &&
       epoch == sessionGeneration &&
-      !(widget.localUnlock?.locked ?? false);
+      !(widget.localUnlock?.locked ?? false) &&
+      !durableLocked;
 
   bool Function() captureSessionGuard() {
     final epoch = sessionGeneration;
@@ -514,7 +680,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
       actionBusy = false;
     }
     _wasLocked = locked;
-    if (!locked && logged && api.token == null) {
+    if (!locked && logged && api.token == null && !hasDurableSession) {
       endSession(message: '登录已失效，请重新登录');
       return;
     }
@@ -523,7 +689,11 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
 
   void bindApiSession(MailApi source) {
     source.onSessionCleared = () {
-      if (mounted && logged && identical(source, api)) {
+      if (mounted &&
+          logged &&
+          identical(source, api) &&
+          !_loggingOut &&
+          !hasDurableSession) {
         endSession(message: '登录已失效，请重新登录');
       }
     };
@@ -535,9 +705,13 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    cancelPickerContinuation();
     vaultGeneration++;
     sessionExpiryTimer?.cancel();
     unawaited(sessionVault.cancel());
+    final retiring = deviceSession;
+    deviceSession = null;
+    unawaited(retiring?.retire() ?? deviceSessionVault.lock());
     widget.localUnlock?.removeListener(unlockChanged);
     navigation.dispose();
     poll?.cancel();
@@ -545,6 +719,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
     listScroll.dispose();
     detailScroll.dispose();
     serverAddress.dispose();
+    rememberedDeviceName.dispose();
     username.dispose();
     password.dispose();
     search.dispose();
@@ -564,10 +739,280 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
   void fail(Object e) {
     if (!mounted) return;
     setState(() => error = e.toString());
-    if (api.token == null && logged) {
+    if (api.token == null && logged && !hasDurableSession && !_loggingOut) {
       endSession(message: e.toString());
     }
   }
+
+  DeviceSessionCoordinator createDeviceSession(
+    MailApi source,
+    ServerProfile profile,
+  ) {
+    late DeviceSessionCoordinator coordinator;
+    coordinator = DeviceSessionCoordinator(
+      api: source,
+      vault: deviceSessionVault,
+      profile: profile,
+      onChanged: () {
+        if (!mounted || !identical(deviceSession, coordinator)) return;
+        setState(() {
+          rememberedMetadata = coordinator.metadata ?? rememberedMetadata;
+        });
+        updateDevicePrivacy();
+      },
+    );
+    return coordinator;
+  }
+
+  Future<void> discoverRememberedDevice() async {
+    if (!deviceSessionVault.supported) return;
+    final operation = vaultOperation;
+    final result = await deviceSessionVault.status();
+    if (!mounted ||
+        operation != vaultOperation ||
+        logged ||
+        busy ||
+        pairingOpen) {
+      return;
+    }
+    final metadata = result.metadata;
+    if (metadata == null) {
+      if ({
+        DeviceVaultState.expired,
+        DeviceVaultState.invalidated,
+        DeviceVaultState.corrupt,
+        DeviceVaultState.mismatch,
+      }.contains(result.state)) {
+        setState(() => error = '此设备保存的登录已到期或不可用，请重新登录。');
+      }
+      return;
+    }
+    setState(() => rememberedMetadata = metadata);
+    // Discovery cannot redirect authenticated traffic. Only auto-restore the
+    // selected HTTPS origin/account; native unlock authenticates that binding.
+    if (!metadata.biometricEnabled &&
+        serverAddress.text == metadata.profile.apiBase &&
+        username.text == metadata.accountId) {
+      await restoreRememberedDevice();
+    }
+  }
+
+  Future<void> restoreRememberedDevice() async {
+    final metadata = rememberedMetadata;
+    if (metadata == null ||
+        _loggingOut ||
+        busy ||
+        vaultBusy ||
+        logged ||
+        pairingOpen ||
+        !_appForeground) {
+      return;
+    }
+    if (widget.localUnlock?.busy ?? false) return;
+    final operation = ++vaultOperation;
+    _deviceAuthenticationOwned = metadata.biometricEnabled;
+    widget.localUnlock?.setExternalAuthenticationBusy(true);
+    setState(() {
+      busy = true;
+      vaultBusy = true;
+      error = '';
+    });
+    final candidate =
+        widget.recoveryApiFactory?.call(metadata.profile.apiBase) ??
+        MailApi(base: metadata.profile.apiBase);
+    final coordinator = createDeviceSession(candidate, metadata.profile);
+    final previous = deviceSession;
+    deviceSession = coordinator;
+    await previous?.retire();
+    try {
+      await coordinator.restore(accountId: metadata.accountId);
+      if (!mounted ||
+          operation != vaultOperation ||
+          pairingOpen ||
+          !_appForeground ||
+          !identical(deviceSession, coordinator)) {
+        return;
+      }
+      _configuredApi?.dispose();
+      widget.api.token = null;
+      _configuredApi = candidate;
+      bindApiSession(candidate);
+      serverAddress.text = metadata.profile.apiBase;
+      username.text = metadata.accountId;
+      password.clear();
+      await resumeAuthenticatedSession();
+    } catch (e) {
+      if (mounted && operation == vaultOperation) {
+        setState(() => error = e.toString());
+      }
+    } finally {
+      _deviceAuthenticationOwned = false;
+      widget.localUnlock?.setExternalAuthenticationBusy(false);
+      if (!identical(api, candidate)) {
+        await coordinator.retire();
+        candidate.dispose();
+        if (identical(deviceSession, coordinator)) deviceSession = null;
+      }
+      if (mounted && operation == vaultOperation) {
+        setState(() {
+          busy = false;
+          vaultBusy = false;
+        });
+      }
+    }
+  }
+
+  Future<void> resumeDeviceSession() async {
+    final coordinator = deviceSession;
+    if (coordinator == null ||
+        vaultBusy ||
+        _loggingOut ||
+        (widget.localUnlock?.busy ?? false)) {
+      return;
+    }
+    final operation = vaultOperation;
+    _deviceAuthenticationOwned = coordinator.metadata?.biometricEnabled == true;
+    widget.localUnlock?.setExternalAuthenticationBusy(true);
+    setState(() => vaultBusy = true);
+    updateDevicePrivacy();
+    try {
+      await coordinator.resume();
+      if (!mounted ||
+          operation != vaultOperation ||
+          !identical(deviceSession, coordinator)) {
+        return;
+      }
+      _deviceAuthenticationOwned = false;
+      setState(() => error = '');
+      if (logged && !durableLocked) await refresh(silent: true);
+    } catch (e) {
+      if (mounted && operation == vaultOperation) {
+        setState(() => error = e.toString());
+      }
+    } finally {
+      _deviceAuthenticationOwned = false;
+      _biometricConfiguration = false;
+      widget.localUnlock?.setExternalAuthenticationBusy(false);
+      if (mounted && operation == vaultOperation) {
+        setState(() => vaultBusy = false);
+        updateDevicePrivacy();
+      }
+    }
+  }
+
+  Future<void> setDeviceBiometric(bool enabled) async {
+    final coordinator = deviceSession;
+    if (coordinator == null || !logged || vaultBusy || !_appForeground) return;
+    if (widget.localUnlock?.busy ?? false) return;
+    final operation = vaultOperation;
+    _deviceAuthenticationOwned = true;
+    _biometricConfiguration = true;
+    widget.localUnlock?.setExternalAuthenticationBusy(true);
+    setState(() {
+      vaultBusy = true;
+      vaultMessage = '';
+    });
+    updateDevicePrivacy();
+    try {
+      await coordinator.setBiometricEnabled(enabled, explicitOptIn: true);
+      if (mounted &&
+          _appForeground &&
+          operation == vaultOperation &&
+          identical(deviceSession, coordinator) &&
+          coordinator.locked) {
+        await coordinator.resume();
+      }
+      if (mounted &&
+          operation == vaultOperation &&
+          identical(deviceSession, coordinator)) {
+        setState(
+          () => vaultMessage = coordinator.metadata?.biometricEnabled == true
+              ? '指纹 / 系统验证已开启，返回应用或重启后需验证。自动续期不会反复弹出验证。'
+              : '指纹 / 系统验证已关闭；此设备仍会加密保存登录并自动续期。',
+        );
+      }
+    } catch (e) {
+      // A canceled PIN setup keeps the previous encryption mode. If lifecycle
+      // pausing erased plaintext, restore the still-unprotected mode silently.
+      if (mounted &&
+          _appForeground &&
+          operation == vaultOperation &&
+          identical(deviceSession, coordinator) &&
+          coordinator.locked &&
+          coordinator.metadata?.biometricEnabled != true) {
+        try {
+          await coordinator.resume();
+        } catch (_) {}
+      }
+      if (mounted && operation == vaultOperation) {
+        setState(() => vaultMessage = e.toString());
+      }
+    } finally {
+      _deviceAuthenticationOwned = false;
+      _biometricConfiguration = false;
+      widget.localUnlock?.setExternalAuthenticationBusy(false);
+      if (mounted && operation == vaultOperation) {
+        setState(() => vaultBusy = false);
+        updateDevicePrivacy();
+      }
+    }
+  }
+
+  Widget rememberedDeviceCard() {
+    final metadata = rememberedMetadata!;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('此设备已记住登录'),
+            Text('${metadata.accountId} · ${metadata.profile.origin}'),
+            FilledButton.icon(
+              key: const Key('restore-remembered-device'),
+              onPressed: busy ? null : restoreRememberedDevice,
+              icon: Icon(
+                metadata.biometricEnabled ? Icons.fingerprint : Icons.login,
+              ),
+              label: Text(metadata.biometricEnabled ? '系统验证后继续' : '继续登录'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget durableLockView() => Scaffold(
+    body: SafeArea(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.lock_outline, size: 48),
+              const SizedBox(height: 16),
+              const Text('此设备的登录已锁定'),
+              if (error.isNotEmpty) Text(error),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                key: const Key('unlock-remembered-device'),
+                onPressed: vaultBusy || !_appForeground
+                    ? null
+                    : resumeDeviceSession,
+                icon: const Icon(Icons.fingerprint),
+                label: Text(vaultBusy ? '正在恢复…' : '解锁并继续'),
+              ),
+              TextButton(
+                onPressed: vaultBusy ? null : signoutFromLock,
+                child: const Text('退出登录'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 
   Future<void> discoverSavedSession() async {
     if (!sessionVault.supported) return;
@@ -842,6 +1287,21 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
 
   Widget? deviceSecuritySettings() {
     final controller = widget.localUnlock;
+    if (hasDurableSession) {
+      return DeviceSecurityCard(
+        lockSupported: true,
+        lockEnabled: deviceSession!.metadata?.biometricEnabled ?? false,
+        storageSupported: true,
+        storageEnabled: true,
+        durable: true,
+        idleExpiresAt: deviceSession!.metadata?.idleExpiresAt,
+        expiresAt: deviceSession!.metadata?.absoluteExpiresAt,
+        busy: vaultBusy || loading || applyingRoute,
+        message: vaultMessage,
+        onLockChanged: (value) => unawaited(setDeviceBiometric(value)),
+        onStorageChanged: (_) {},
+      );
+    }
     if (!(controller?.supported ?? false) && !sessionVault.supported) {
       return null;
     }
@@ -901,6 +1361,9 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
     if (!kIsWeb && serverAddress.text.trim().isNotEmpty) {
       final profile = ServerProfile.parse(serverAddress.text.trim());
       if (api.base != profile.apiBase) {
+        final previous = deviceSession;
+        deviceSession = null;
+        await previous?.retire();
         _configuredApi?.dispose();
         widget.api.token = null;
         _configuredApi = MailApi(base: profile.apiBase);
@@ -922,44 +1385,182 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
     }
   }
 
+  void cancelPasskeyAcceptance() {
+    if (!_acceptingPasskey) return;
+    _acceptingPasskey = false;
+    vaultOperation++;
+    final retiring = deviceSession;
+    deviceSession = null;
+    if (retiring != null) unawaited(retiring.retire());
+  }
+
   Future<void> acceptPasskeySession(
     MailApi candidate,
     PasskeySession session,
   ) async {
-    if (!mounted || logged || pairingOpen || !identical(api, candidate)) return;
-    final operation = ++vaultOperation;
-    final serverIntent = serverAddress.text;
-    if (!await discardSavedSession() ||
-        operation != vaultOperation ||
-        serverAddress.text != serverIntent ||
-        !mounted ||
+    void discardGrant() {
+      if (session.refreshToken != null) {
+        unawaited(
+          candidate
+              .revokeDeviceSession(session.refreshToken!)
+              .catchError((Object _) {}),
+        );
+      }
+    }
+
+    if (!mounted ||
         logged ||
         pairingOpen ||
+        _loggingOut ||
         !identical(api, candidate)) {
+      discardGrant();
       return;
     }
-    candidate.token = session.accessToken;
-    candidate.sessionExpiresAt = session.expiresAt;
-    candidate.sessionAccount = session.accountName;
-    username.text = session.accountName;
-    password.clear();
-    unawaited(resumeAuthenticatedSession().catchError(fail));
+    final operation = ++vaultOperation;
+    final serverIntent = serverAddress.text;
+    bool current() =>
+        mounted &&
+        operation == vaultOperation &&
+        serverAddress.text == serverIntent &&
+        !logged &&
+        !pairingOpen &&
+        !_loggingOut &&
+        identical(api, candidate);
+    _acceptingPasskey = true;
+    try {
+      if (!await discardSavedSession() || !current()) {
+        discardGrant();
+        return;
+      }
+      final previous = deviceSession;
+      deviceSession = null;
+      await previous?.retire();
+      if (deviceSessionVault.supported) {
+        final result = await deviceSessionVault.clear();
+        if (result.state != DeviceVaultState.empty) {
+          discardGrant();
+          throw ApiException('VAULT_CLEAR_FAILED', '未能删除原设备登录，请重试。');
+        }
+      }
+      if (!current()) {
+        discardGrant();
+        return;
+      }
+      rememberedMetadata = null;
+      candidate.token = session.accessToken;
+      candidate.sessionExpiresAt = session.expiresAt;
+      candidate.sessionAccount = session.accountName;
+      if (session.durable) {
+        if (!deviceSessionVault.supported || !rememberDevice) {
+          discardGrant();
+          candidate.clearAccess(notify: false);
+          throw ApiException('REMEMBER_DEVICE_REQUIRED', '请确认是否记住此设备后重新登录。');
+        }
+        final coordinator = createDeviceSession(
+          candidate,
+          ServerProfile.parse(candidate.base),
+        );
+        deviceSession = coordinator;
+        await coordinator.acceptLogin(
+          session.sessionResponse,
+          explicitOptIn: true,
+        );
+        if (!current() || !identical(deviceSession, coordinator)) {
+          await coordinator.logout();
+          return;
+        }
+      }
+      username.text = session.accountName;
+      password.clear();
+      if (!_appForeground) {
+        await deviceSession?.suspend();
+        if (!hasDurableSession) candidate.clearAccess(notify: false);
+        return;
+      }
+      // Persistence has completed before authenticated UI is exposed. Mailbox
+      // loading may continue asynchronously, preserving the existing UI flow.
+      unawaited(resumeAuthenticatedSession().catchError(fail));
+    } finally {
+      if (operation == vaultOperation) _acceptingPasskey = false;
+    }
   }
 
   Future<void> login() async {
-    if (busy || (widget.localUnlock?.busy ?? false)) return;
-    vaultOperation++;
-    setState(() => busy = true);
+    if (busy || _loggingOut || (widget.localUnlock?.busy ?? false)) return;
+    final operation = ++vaultOperation;
+    final accountIntent = username.text.trim();
+    final serverIntent = serverAddress.text;
+    final remember = deviceSessionVault.supported && rememberDevice;
+    setState(() {
+      busy = true;
+      error = '';
+    });
     try {
       if (!await discardSavedSession()) return;
       await prepareLoginApi();
-      await api.login(username.text.trim(), password.text);
+      final source = api;
+      final previous = deviceSession;
+      deviceSession = null;
+      await previous?.retire();
+      if (deviceSessionVault.supported) {
+        final cleared = await deviceSessionVault.clear();
+        if (cleared.state != DeviceVaultState.empty) {
+          throw ApiException('VAULT_CLEAR_FAILED', '未能删除原设备登录，请重试后再登录。');
+        }
+        rememberedMetadata = null;
+        _deviceClearFailed = false;
+      }
+      final profile = remember ? ServerProfile.parse(source.base) : null;
+      final response = await source.login(
+        accountIntent,
+        password.text,
+        rememberDevice: remember,
+        deviceName: remember
+            ? sanitizeDeviceName(rememberedDeviceName.text)
+            : null,
+      );
+      if (!mounted ||
+          operation != vaultOperation ||
+          !identical(api, source) ||
+          serverAddress.text != serverIntent ||
+          username.text.trim() != accountIntent ||
+          pairingOpen) {
+        if (response['refreshToken'] is String) {
+          unawaited(
+            source
+                .revokeDeviceSession(response['refreshToken'] as String)
+                .catchError((Object _) {}),
+          );
+        }
+        if (source.token == response['accessToken']) {
+          source.clearAccess(notify: false);
+        }
+        return;
+      }
+      if (remember && response['refreshToken'] != null) {
+        final coordinator = createDeviceSession(source, profile!);
+        deviceSession = coordinator;
+        await coordinator.acceptLogin(response, explicitOptIn: true);
+        if (!mounted ||
+            operation != vaultOperation ||
+            !identical(deviceSession, coordinator)) {
+          return;
+        }
+      }
       password.clear();
+      if (!_appForeground) {
+        await deviceSession?.suspend();
+        if (!hasDurableSession) source.clearAccess(notify: false);
+        return;
+      }
       await resumeAuthenticatedSession();
+      if (remember && response['refreshToken'] == null && mounted && logged) {
+        setState(() => error = '此服务器尚未提供长期登录，本次登录仍按原有效期到期，未记住此设备。');
+      }
     } catch (e) {
-      fail(e);
+      if (mounted && operation == vaultOperation) fail(e);
     } finally {
-      if (mounted) setState(() => busy = false);
+      if (mounted && operation == vaultOperation) setState(() => busy = false);
     }
   }
 
@@ -968,7 +1569,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
     final session = ++sessionGeneration;
     sessionExpiryTimer?.cancel();
     final expiry = api.sessionExpiresAt;
-    if (expiry != null) {
+    if (expiry != null && !hasDurableSession) {
       final remaining = expiry.difference(DateTime.now().toUtc());
       if (remaining <= Duration.zero) {
         endSession(message: '本次登录已到期，请重新登录');
@@ -993,29 +1594,73 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
     await applyBrowserRoute(resume.location, restoringLogin: true);
     poll?.cancel();
     poll = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (!loading &&
+      if (_appForeground &&
+          !durableLocked &&
+          !loading &&
           !actionBusy &&
           !applyingRoute &&
           !settingsOpen &&
           !(widget.localUnlock?.locked ?? false)) {
-        refresh(silent: true);
+        refresh(silent: true, passive: true);
       }
     });
+  }
+
+  void discardPairedResult(DevicePairingResult result) {
+    if (result.refreshToken != null) {
+      unawaited(
+        result.api
+            .revokeDeviceSession(result.refreshToken!)
+            .then<void>((_) {}, onError: (Object _) {})
+            .whenComplete(result.api.dispose),
+      );
+    } else {
+      result.api.dispose();
+    }
   }
 
   Future<void> acceptPairedDevice(
     ServerProfile profile,
     DevicePairingResult result,
   ) async {
-    if (!mounted || !pairingOpen || logged) {
-      result.api.dispose();
+    if (!mounted || !pairingOpen || logged || _loggingOut) {
+      discardPairedResult(result);
       return;
     }
-    vaultOperation++;
+    final operation = ++vaultOperation;
     final cleared = await discardSavedSession();
-    if (!cleared || !mounted || !pairingOpen || logged) {
-      result.api.dispose();
+    if (!cleared ||
+        !mounted ||
+        operation != vaultOperation ||
+        !pairingOpen ||
+        logged) {
+      discardPairedResult(result);
       return;
+    }
+    final previous = deviceSession;
+    deviceSession = null;
+    await previous?.retire();
+    if (!mounted || operation != vaultOperation || !pairingOpen || logged) {
+      discardPairedResult(result);
+      return;
+    }
+    if (deviceSessionVault.supported) {
+      final removed = await deviceSessionVault.clear();
+      if (!mounted || operation != vaultOperation || !pairingOpen || logged) {
+        discardPairedResult(result);
+        return;
+      }
+      if (removed.state != DeviceVaultState.empty) {
+        discardPairedResult(result);
+        setState(() {
+          _deviceClearFailed = true;
+          pairingOpen = false;
+          error = '未能删除原设备登录，未保存新登录。请重试删除后重新扫码；不要将设备交给他人。';
+        });
+        return;
+      }
+      rememberedMetadata = null;
+      _deviceClearFailed = false;
     }
     _configuredApi?.dispose();
     widget.api.token = null;
@@ -1033,11 +1678,24 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
       error = '';
     });
     try {
+      if (result.remembered) {
+        final coordinator = createDeviceSession(result.api, profile);
+        deviceSession = coordinator;
+        await coordinator.acceptLogin(
+          result.sessionResponse,
+          explicitOptIn: true,
+        );
+        if (!mounted ||
+            operation != vaultOperation ||
+            !identical(deviceSession, coordinator)) {
+          return;
+        }
+      }
       await resumeAuthenticatedSession();
     } catch (e) {
       fail(e);
     } finally {
-      if (mounted) setState(() => busy = false);
+      if (mounted && operation == vaultOperation) setState(() => busy = false);
     }
   }
 
@@ -1047,13 +1705,20 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
     inlineReply = null;
   }
 
-  Future<void> refresh({bool silent = false, bool append = false}) async {
+  Future<void> refresh({
+    bool silent = false,
+    bool append = false,
+    bool passive = false,
+  }) async {
     final session = sessionGeneration;
     if (!isCurrentSession(session) ||
         (append && loading) ||
         (silent && refreshing)) {
       return;
     }
+    Future<dynamic> read(String path, {Map<String, String>? query}) => passive
+        ? api.requestPassive(path, query: query)
+        : api.request('GET', path, query: query);
     final gen = ++generation;
     var requestFolder = filter == 'starred' ? 'STARRED' : folder;
     var requestAccount = account;
@@ -1066,10 +1731,10 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
     if (!silent) setState(() => loading = true);
     try {
       if (!append) {
-        nextAccounts = rows((await api.request('GET', '/accounts'))['items']);
+        nextAccounts = rows((await read('/accounts'))['items']);
         if (!isCurrentSession(session) || gen != generation) return;
         nextCaps = Map<String, dynamic>.from(
-          await api.request('GET', '/settings/capabilities'),
+          await read('/settings/capabilities'),
         );
       }
       if (!isCurrentSession(session) || gen != generation) return;
@@ -1092,8 +1757,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
       var nextCoverage = coverage;
       do {
         final previousCursor = nextCursor;
-        final data = await api.request(
-          'GET',
+        final data = await read(
           '/messages',
           query: {
             'folder': requestFolder,
@@ -1130,6 +1794,9 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
         error = '';
       });
     } catch (e) {
+      if (passive && e is ApiException && e.code == 'PASSIVE_ACCESS_EXPIRED') {
+        return;
+      }
       if (isSameSession(session) && gen == generation) fail(e);
     } finally {
       if (isCurrentSession(session) && gen == generation) {
@@ -1294,6 +1961,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
         builder: (_) => ComposeDialog(
           api: api,
           captureSessionGuard: captureSessionGuard,
+          runExternalPicker: runExternalPicker,
           accounts: accounts,
           initialAccountId: account,
           reply: reply,
@@ -1430,14 +2098,69 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
   }
 
   void signoutFromLock() {
-    // The gate obtained explicit discard confirmation outside the protected
-    // Navigator. Clear immediately even if the server is temporarily offline.
+    if (_loggingOut) return;
+    final coordinator = deviceSession;
+    if (coordinator != null && coordinator.durable) {
+      _loggingOut = true;
+      // logout copies the refresh credential synchronously before local UI
+      // retirement, so expired access never prevents family revocation.
+      final request = coordinator.logout();
+      deviceSession = null;
+      rememberedMetadata = null;
+      endSession();
+      unawaited(
+        request.then<void>(
+          (_) {
+            if (mounted) {
+              setState(() => _loggingOut = false);
+            } else {
+              _loggingOut = false;
+            }
+          },
+          onError: (Object e) {
+            _loggingOut = false;
+            _deviceClearFailed =
+                e is ApiException && e.code == 'VAULT_CLEAR_FAILED';
+            if (mounted) {
+              setState(
+                () =>
+                    error = e is ApiException && e.code == 'VAULT_CLEAR_FAILED'
+                    ? '未能删除此设备保存的登录，请重试；不要将设备交给他人。'
+                    : '此设备已退出，但尚未确认服务器撤销。请联网后在其他已登录设备撤销此设备。',
+              );
+            }
+          },
+        ),
+      );
+      return;
+    }
     final request = api.request('POST', '/auth/logout');
     endSession();
     unawaited(request.then<void>((_) {}, onError: (_) {}));
   }
 
+  Future<void> retryDeviceClear() async {
+    if (_loggingOut || busy) return;
+    setState(() => busy = true);
+    final result = await deviceSessionVault.clear();
+    if (!mounted) return;
+    setState(() {
+      busy = false;
+      _deviceClearFailed = result.state != DeviceVaultState.empty;
+      error = _deviceClearFailed
+          ? '仍未能删除此设备登录，请重试或在系统设置中清除应用数据。'
+          : '已删除本机登录；服务器撤销仍需在其他已登录设备确认。';
+    });
+  }
+
   void endSession({String message = ''}) {
+    cancelPickerContinuation();
+    final retired = deviceSession;
+    deviceSession = null;
+    if (retired != null) {
+      rememberedMetadata = null;
+      unawaited(retired.retire());
+    }
     vaultOperation++;
     busy = false;
     vaultBusy = false;
@@ -1479,6 +2202,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
       refreshing = false;
       error = message;
     });
+    updateDevicePrivacy();
   }
 
   @override
@@ -1495,6 +2219,9 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
       );
     }
     if (!logged) return loginView();
+    if (durableLocked && widget.onDevicePrivacyChanged == null) {
+      return durableLockView();
+    }
     publishRoute();
     return Shortcuts(
       shortcuts: {
@@ -1586,7 +2313,8 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                                                   setState(
                                                     () => settingsOpen = false,
                                                   );
-                                                  if (api.token == null) {
+                                                  if (api.token == null &&
+                                                      !hasDurableSession) {
                                                     endSession();
                                                   }
                                                 },
@@ -1660,6 +2388,8 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
             style: TextStyle(fontSize: 17, color: muted),
           ),
           const SizedBox(height: 36),
+          if (rememberedMetadata != null && deviceSessionVault.supported)
+            rememberedDeviceCard(),
           if (savedSessionMetadata != null && sessionVault.supported)
             savedSessionCard(),
           const Text(
@@ -1669,6 +2399,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
           const SizedBox(height: 16),
           TextField(
             controller: username,
+            enabled: !busy && !_loggingOut,
             autofillHints: const [AutofillHints.username],
             decoration: const InputDecoration(labelText: '用户名'),
             onSubmitted: (_) => login(),
@@ -1676,6 +2407,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
           const SizedBox(height: 12),
           TextField(
             controller: password,
+            enabled: !busy && !_loggingOut,
             obscureText: true,
             autofillHints: const [AutofillHints.password],
             decoration: const InputDecoration(labelText: '密码'),
@@ -1686,7 +2418,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
             TextField(
               key: const Key('server-address'),
               controller: serverAddress,
-              enabled: !busy,
+              enabled: !busy && !_loggingOut,
               keyboardType: TextInputType.url,
               autocorrect: false,
               onChanged: (_) => setState(() {}),
@@ -1697,30 +2429,65 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
             ),
             const SizedBox(height: 12),
           ],
+          if (deviceSessionVault.supported)
+            CheckboxListTile(
+              key: const Key('remember-device'),
+              contentPadding: EdgeInsets.zero,
+              value: rememberDevice,
+              onChanged: busy
+                  ? null
+                  : (value) => setState(() => rememberDevice = value == true),
+              title: const Text('记住此设备'),
+              subtitle: const Text(
+                '登录后加密保存登录并自动续期。默认连续 30 天未使用或满 365 天需重新登录，可随时退出或撤销。指纹锁默认关闭，可在设置中另行开启。',
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+          if (deviceSessionVault.supported && rememberDevice)
+            TextField(
+              key: const Key('remember-device-name'),
+              controller: rememberedDeviceName,
+              onChanged: (_) => setState(() {}),
+              enabled: !busy && !_loggingOut,
+              maxLength: 80,
+              decoration: const InputDecoration(
+                labelText: '此设备名称',
+                helperText: '用于识别和撤销此设备，可自行修改',
+              ),
+            ),
           if (error.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 12),
               child: Text(error, style: const TextStyle(color: Colors.red)),
+            ),
+          if (_deviceClearFailed)
+            TextButton(
+              key: const Key('retry-device-clear'),
+              onPressed: busy || _loggingOut ? null : retryDeviceClear,
+              child: const Text('重试删除此设备登录'),
             ),
           const SizedBox(height: 20),
           SizedBox(
             width: double.infinity,
             height: 48,
             child: FilledButton(
-              onPressed: busy ? null : login,
+              onPressed: busy || _loggingOut ? null : login,
               child: Text(busy ? '正在连接…' : '登录'),
             ),
           ),
           const SizedBox(height: 12),
           PasskeyLoginButton(
             acquireApi: prepareLoginApi,
-            enabled: !busy,
+            enabled: !busy && !_loggingOut,
             contextKey: serverAddress.text,
             isCurrent: () => mounted && !logged && !pairingOpen,
             onBusyChanged: (value) {
               if (mounted) setState(() => busy = value);
             },
             onAuthenticated: acceptPasskeySession,
+            rememberDevice: deviceSessionVault.supported && rememberDevice,
+            deviceName: sanitizeDeviceName(rememberedDeviceName.text),
+            onCancelled: cancelPasskeyAcceptance,
           ),
           if (!kIsWeb) ...[
             const SizedBox(height: 12),
@@ -1728,7 +2495,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
               width: double.infinity,
               child: OutlinedButton.icon(
                 key: const Key('pair-device'),
-                onPressed: busy
+                onPressed: busy || _loggingOut
                     ? null
                     : () => setState(() {
                         password.clear();
@@ -1744,7 +2511,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
           const Text(
             kIsWeb
                 ? '连接由你掌控的服务器。网页登录凭证仅保存在本次会话内；刷新或关闭后需重新登录。'
-                : '默认仅在内存中保持登录。登录后可在“账户与设置 → 设备安全与登录”明确开启安全保存；只恢复未到期的原会话。',
+                : '勾选“记住此设备”后点登录，即允许在此设备保持登录。扫码登录由网页账户所有者决定是否记住；取消勾选则仅本次会话有效。',
             style: TextStyle(fontSize: 12, color: muted, height: 1.6),
           ),
         ],
@@ -2765,6 +3532,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                               key: inlineAnchorKey,
                               child: ComposeEditor(
                                 captureSessionGuard: captureSessionGuard,
+                                runExternalPicker: runExternalPicker,
                                 key: inlineComposeKey,
                                 api: api,
                                 accounts: accounts,
@@ -2822,7 +3590,10 @@ class _OutboxDialogState extends State<OutboxDialog> {
   void initState() {
     super.initState();
     load();
-    timer = Timer.periodic(const Duration(seconds: 3), (_) => load());
+    timer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => load(passive: true),
+    );
   }
 
   @override
@@ -2831,13 +3602,24 @@ class _OutboxDialogState extends State<OutboxDialog> {
     super.dispose();
   }
 
-  Future<void> load() async {
+  Future<void> load({bool passive = false}) async {
     final check = widget.captureSessionGuard?.call() ?? () => true;
     final bearer = widget.api.token;
-    bool current() => mounted && check() && widget.api.token == bearer;
+    final coordinator = widget.api.deviceSession;
+    final epoch = coordinator?.epoch;
+    bool current() =>
+        mounted &&
+        check() &&
+        (coordinator == null
+            ? widget.api.token == bearer
+            : identical(widget.api.deviceSession, coordinator) &&
+                  coordinator.durable &&
+                  coordinator.epoch == epoch);
     if (!current()) return;
     try {
-      final data = await widget.api.request('GET', '/send-intents');
+      final data = passive
+          ? await widget.api.requestPassive('/send-intents')
+          : await widget.api.request('GET', '/send-intents');
       if (current()) {
         setState(() {
           items = (data['items'] as List)
@@ -2848,6 +3630,9 @@ class _OutboxDialogState extends State<OutboxDialog> {
         });
       }
     } catch (e) {
+      if (passive && e is ApiException && e.code == 'PASSIVE_ACCESS_EXPIRED') {
+        return;
+      }
       if (current()) {
         setState(() {
           error = e.toString();

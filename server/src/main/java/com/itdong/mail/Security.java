@@ -22,6 +22,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
 public class Security extends OncePerRequestFilter {
   final Store store;
+  @org.springframework.beans.factory.annotation.Autowired DeviceSessionService deviceSessions;
+  @org.springframework.beans.factory.annotation.Autowired java.time.Clock clock = java.time.Clock.systemUTC();
   final boolean demo;
   final String username, password, key, bind, origin;
   final BCryptPasswordEncoder bcrypt = new BCryptPasswordEncoder(12);
@@ -157,7 +159,8 @@ public class Security extends OncePerRequestFilter {
     var owner = store.one("SELECT * FROM owner_user WHERE id=1");
     if (!Json.string(body, "username").equals(owner.get("username")))
       throw new ApiError(401, "INVALID_CREDENTIALS", "Invalid username or password");
-    var session = issueOwnerSession();
+    boolean remember = DeviceSessionService.remember(body);
+    var session = remember ? deviceSessions.issue(DeviceSessionService.deviceName(body)) : issueOwnerSession();
     session.put("demoMode", demo);
     return session;
   }
@@ -167,7 +170,7 @@ public class Security extends OncePerRequestFilter {
     return store.write(() -> {
       String token = token();
       long now = System.currentTimeMillis(), expires = now + 8 * 3600_000L;
-      store.db.update("DELETE FROM access_token WHERE expires_at<=?", now);
+      store.db.update("DELETE FROM access_token WHERE expires_at<=? AND token_hash NOT IN (SELECT token_hash FROM device_session_access)", now);
       store.db.update("INSERT INTO access_token VALUES(?,?)", hash(token), expires);
       return Json.map("accessToken", token, "expiresAt", Instant.ofEpochMilli(expires).toString());
     });
@@ -175,6 +178,7 @@ public class Security extends OncePerRequestFilter {
 
   void logout(String tokenHash) {
     store.write(() -> {
+      deviceSessions.revokeByAccess(tokenHash);
       store.db.update("UPDATE device_pairing SET state='EXPIRED',secret_hash=NULL WHERE creator_hash=? AND state IN ('CREATED','CLAIMED','APPROVED')", tokenHash);
       store.db.update("UPDATE paired_device SET revoked=TRUE WHERE id IN (SELECT device_id FROM device_access_token WHERE token_hash=?)", tokenHash);
       store.db.update("DELETE FROM passkey_request WHERE creator_hash=?", tokenHash);
@@ -265,7 +269,7 @@ public class Security extends OncePerRequestFilter {
     }
     boolean publicPath =
         (path.equals("/api/v1/health") && Set.of("GET", "HEAD").contains(req.getMethod()))
-            || (path.equals("/api/v1/auth/login") && req.getMethod().equals("POST"))
+            || (Set.of("/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/device-session/logout").contains(path) && req.getMethod().equals("POST"))
             || (Set.of("/api/v1/auth/device-pairings/claim", "/api/v1/auth/device-pairings/poll",
                 "/api/v1/auth/device-pairings/redeem").contains(path) && req.getMethod().equals("POST"))
             || (path.equals("/api/v1/auth/passkeys/capabilities") && req.getMethod().equals("GET"))
@@ -281,13 +285,24 @@ public class Security extends OncePerRequestFilter {
               && store.db.queryForObject(
                       "SELECT COUNT(*) FROM access_token a WHERE a.token_hash=? AND a.expires_at>? "
                           + "AND NOT EXISTS (SELECT 1 FROM device_access_token t JOIN paired_device d ON d.id=t.device_id "
-                          + "WHERE t.token_hash=a.token_hash AND (d.revoked=TRUE OR d.expires_at<=?))",
+                          + "WHERE t.token_hash=a.token_hash AND (d.revoked=TRUE OR d.expires_at<=?)) "
+                          + "AND NOT EXISTS (SELECT 1 FROM device_session_access t JOIN device_session s ON s.id=t.session_id "
+                          + "WHERE t.token_hash=a.token_hash AND (s.revoked=TRUE OR s.idle_expires_at<=? OR s.absolute_expires_at<=?))",
                       Integer.class,
                       hash(h.substring(7)),
-                      System.currentTimeMillis(),
-                      System.currentTimeMillis())
+                      clock.millis(),
+                      clock.millis(),
+                      clock.millis(),
+                      clock.millis())
                   > 0;
       if (!valid) {
+        long now = clock.millis();
+        boolean expired = h != null && h.startsWith("Bearer ") && store.db.queryForObject(
+            "SELECT COUNT(*) FROM access_token a JOIN device_session_access t ON t.token_hash=a.token_hash "
+                + "JOIN device_session s ON s.id=t.session_id JOIN paired_device d ON d.id=s.device_id "
+                + "WHERE a.token_hash=? AND a.expires_at<=? AND s.revoked=FALSE AND d.revoked=FALSE "
+                + "AND s.idle_expires_at>? AND s.absolute_expires_at>? AND d.expires_at>?",
+            Integer.class, hash(h.substring(7)), now, now, now, now) == 1;
         res.setStatus(401);
         res.setContentType("application/json");
         res.getWriter()
@@ -297,7 +312,7 @@ public class Security extends OncePerRequestFilter {
                         "error",
                         Json.map(
                             "code",
-                            "UNAUTHORIZED",
+                            expired ? "ACCESS_EXPIRED" : "UNAUTHORIZED",
                             "message",
                             "Sign in required",
                             "requestId",
@@ -308,9 +323,9 @@ public class Security extends OncePerRequestFilter {
       req.setAttribute("tokenHash", tokenHash);
       store.db.update("UPDATE paired_device SET last_seen_at=? WHERE revoked=FALSE AND last_seen_at<? "
           + "AND id IN (SELECT device_id FROM device_access_token WHERE token_hash=?)",
-          System.currentTimeMillis(), System.currentTimeMillis() - 60_000, tokenHash);
+          clock.millis(), clock.millis() - 60_000, tokenHash);
     }
-    if ((path.startsWith("/api/v1/auth/device-pairings") || path.startsWith("/api/v1/auth/passkeys")) && req.getQueryString() != null) {
+    if (path.startsWith("/api/v1/auth/") && req.getQueryString() != null) {
       res.setStatus(400);
       res.setContentType("application/json");
       res.getWriter().write(Json.encode(Json.map("error", Json.map("code", "INVALID_REQUEST",

@@ -370,7 +370,9 @@ class _DeviceOnboardingPageState extends State<DeviceOnboardingPage> {
                       color: Colors.amber,
                       key: 'pairing-owner-warning',
                     ),
-                    const Text('登录只保存在内存中，最长 8 小时。关闭或重启应用后需要重新连接。'),
+                    const Text(
+                      '是否记住此设备由网页账户所有者批准。记住后登录会加密保存并自动续期；默认连续 30 天未使用或满 365 天需重新登录。指纹锁默认关闭，可在登录后另行开启。',
+                    ),
                     const SizedBox(height: 20),
                     if (_error.isNotEmpty)
                       _message(
@@ -519,7 +521,11 @@ class _DeviceOnboardingPageState extends State<DeviceOnboardingPage> {
       if (_step == _Step.waiting)
         const Text('等待网页批准，约每 2 秒更新一次状态…')
       else ...[
-        _message('网页已批准此设备的完整访问权限。'),
+        _message(
+          _snapshot!.rememberDevice
+              ? '网页已批准记住此设备及完整访问权限。登录将加密保存并自动续期。'
+              : '网页已批准此设备的完整访问权限，仅本次登录有效，最长 8 小时。',
+        ),
         FilledButton(
           key: const Key('pairing-redeem'),
           onPressed: _redeem,

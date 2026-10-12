@@ -35,13 +35,13 @@ class _MailBodyState extends State<MailBody> {
   bool _images = false, _plain = false, _loading = false, _linkPending = false;
   int _generation = 0;
   String? _imageError;
-  String? _session;
+  bool Function()? _sessionCurrent;
   late SanitizedMailHtml _body;
 
   @override
   void initState() {
     super.initState();
-    _session = widget.api?.token;
+    _sessionCurrent = widget.api?.captureSessionGuard();
     _body = sanitizeMailHtml(widget.html);
   }
 
@@ -53,8 +53,8 @@ class _MailBodyState extends State<MailBody> {
         oldWidget.messageId != widget.messageId ||
         oldWidget.accountId != widget.accountId ||
         oldWidget.api != widget.api ||
-        _session != widget.api?.token) {
-      _session = widget.api?.token;
+        !(_sessionCurrent?.call() ?? true)) {
+      _sessionCurrent = widget.api?.captureSessionGuard();
       _plain = false;
       _blockImages();
     } else if (oldWidget.inputEnabled && !widget.inputEnabled) {
@@ -93,12 +93,9 @@ class _MailBodyState extends State<MailBody> {
     final messageId = widget.messageId, accountId = widget.accountId;
     if (api == null || messageId == null || accountId == null) return;
     final ticket = ++_generation;
-    final session = api.token;
+    final sessionCurrent = api.captureSessionGuard();
     bool current() =>
-        mounted &&
-        ticket == _generation &&
-        api.token == session &&
-        _interactive;
+        mounted && ticket == _generation && sessionCurrent() && _interactive;
     setState(() {
       _loading = true;
       _imageError = null;
@@ -142,7 +139,8 @@ class _MailBodyState extends State<MailBody> {
     // package fallback to navigate or start another kind of application.
     final uri = safeMailLink(value);
     if (uri == null || !_interactive || _linkPending) return true;
-    final ticket = _generation, session = widget.api?.token;
+    final ticket = _generation;
+    final sessionCurrent = widget.api?.captureSessionGuard();
     _linkPending = true;
     try {
       final confirmed = await showDialog<bool>(
@@ -175,7 +173,7 @@ class _MailBodyState extends State<MailBody> {
       if (confirmed != true ||
           !mounted ||
           ticket != _generation ||
-          session != widget.api?.token ||
+          !(sessionCurrent?.call() ?? true) ||
           !_interactive ||
           safeMailLink(value) == null) {
         return true;

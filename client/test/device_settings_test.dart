@@ -12,69 +12,73 @@ const pairingId = 'synthetic-pairing-0001';
 const secret = 'synthetic-secret-never-display-000000000000000';
 
 http.Response jsonResponse(Object data, [int status = 200]) => http.Response(
-      jsonEncode(data),
-      status,
-      headers: {'content-type': 'application/json'},
-    );
+  jsonEncode(data),
+  status,
+  headers: {'content-type': 'application/json'},
+);
 
 Map<String, Object> ownerStatus(String state) => {
-      'pairingId': pairingId,
-      'state': state,
-      'expiresAt': DateTime.now()
-          .add(const Duration(minutes: 2))
-          .toUtc()
-          .toIso8601String(),
-      'accountName': 'synthetic-owner',
-      'permission': 'OWNER_FULL_ACCESS',
-      if (state == 'CLAIMED' || state == 'APPROVED') ...{
-        'confirmationCode': '123456',
-        'deviceName': '合成测试手机',
-      },
-    };
+  'pairingId': pairingId,
+  'state': state,
+  'expiresAt': DateTime.now()
+      .add(const Duration(minutes: 2))
+      .toUtc()
+      .toIso8601String(),
+  'accountName': 'synthetic-owner',
+  'permission': 'OWNER_FULL_ACCESS',
+  if (state == 'CLAIMED' || state == 'APPROVED') ...{
+    'confirmationCode': '123456',
+    'deviceName': '合成测试手机',
+  },
+};
 
 Map<String, Object> createResponse() => {
-      'pairingId': pairingId,
-      'state': 'CREATED',
-      'expiresAt': DateTime.now()
-          .add(const Duration(minutes: 2))
-          .toUtc()
-          .toIso8601String(),
-      'qrPayload': jsonEncode({
-        'type': 'harbor-mail-device-pairing',
-        'version': 1,
-        'serverUrl': 'https://mail.invalid/api/v1',
-        'pairingId': pairingId,
-        'secret': secret,
-      }),
-    };
+  'pairingId': pairingId,
+  'state': 'CREATED',
+  'expiresAt': DateTime.now()
+      .add(const Duration(minutes: 2))
+      .toUtc()
+      .toIso8601String(),
+  'qrPayload': jsonEncode({
+    'type': 'harbor-mail-device-pairing',
+    'version': 1,
+    'serverUrl': 'https://mail.invalid/api/v1',
+    'pairingId': pairingId,
+    'secret': secret,
+  }),
+};
 
 Map<String, Object> device({bool revoked = false}) => {
-      'id': 'synthetic-device-1',
-      'name': '合成测试手机',
-      'createdAt': DateTime.now()
-          .subtract(const Duration(minutes: 1))
-          .toUtc()
-          .toIso8601String(),
-      'expiresAt': DateTime.now()
-          .add(const Duration(hours: 1))
-          .toUtc()
-          .toIso8601String(),
-      'lastSeenAt': DateTime.now().toUtc().toIso8601String(),
-      'revoked': revoked,
-      'permission': 'OWNER_FULL_ACCESS',
-    };
+  'id': 'synthetic-device-1',
+  'name': '合成测试手机',
+  'createdAt': DateTime.now()
+      .subtract(const Duration(minutes: 1))
+      .toUtc()
+      .toIso8601String(),
+  'expiresAt': DateTime.now()
+      .add(const Duration(hours: 1))
+      .toUtc()
+      .toIso8601String(),
+  'lastSeenAt': DateTime.now().toUtc().toIso8601String(),
+  'revoked': revoked,
+  'permission': 'OWNER_FULL_ACCESS',
+};
 
-Future<void> showSettings(WidgetTester tester, MailApi api,
-    {VoidCallback? onClose, Size size = const Size(1100, 1200)}) async {
+Future<void> showSettings(
+  WidgetTester tester,
+  MailApi api, {
+  VoidCallback? onClose,
+  Size size = const Size(1100, 1200),
+}) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
-  await tester.pumpWidget(MaterialApp(
-      home: DeviceSettingsPage(
-    api: api,
-    onClose: onClose ?? () {},
-  )));
+  await tester.pumpWidget(
+    MaterialApp(
+      home: DeviceSettingsPage(api: api, onClose: onClose ?? () {}),
+    ),
+  );
   await tester.pump();
 }
 
@@ -97,65 +101,107 @@ Future<void> claim(WidgetTester tester) async {
 Future<void> approve(WidgetTester tester) async {
   await tap(tester, 'device-code-matched');
   await tester.enterText(
-      find.byKey(const Key('device-owner-password')), 'synthetic-password');
+    find.byKey(const Key('device-owner-password')),
+    'synthetic-password',
+  );
   await tester.pump();
   await tap(tester, 'device-approve');
 }
 
 void main() {
-  testWidgets(
-      'QR stays visual-only; approval requires matching code and password',
-      (tester) async {
-    var approvals = 0;
-    Map<String, dynamic>? approvalBody;
+  testWidgets('owner can explicitly approve a temporary device session', (
+    tester,
+  ) async {
+    Map<String, dynamic>? approval;
     final api = mockApi((request) async {
       if (request.url.path.endsWith('/auth/devices')) {
         return jsonResponse({'items': []});
       }
       if (request.url.path.endsWith('/approve')) {
-        approvals++;
-        approvalBody = jsonDecode(request.body);
+        approval = jsonDecode(request.body);
         return jsonResponse({'state': 'APPROVED'});
-      }
-      if (request.url.path.endsWith('/reject')) {
-        return jsonResponse({'state': 'REJECTED'});
       }
       if (request.method == 'POST') return jsonResponse(createResponse());
       return jsonResponse(ownerStatus('CLAIMED'));
     });
     await showSettings(tester, api);
-    await tap(tester, 'device-create-pairing');
-    expect(find.byKey(const Key('device-pairing-qr')), findsOneWidget);
-    expect(find.textContaining(secret), findsNothing);
-    expect(find.textContaining('全部邮箱和设置'), findsOneWidget);
-    await tester.pump(const Duration(seconds: 2));
-    await tester.pump();
-    expect(find.byKey(const Key('device-pairing-qr')), findsNothing);
-    expect(find.text('123456'), findsOneWidget);
+    await claim(tester);
     expect(
-        tester
-            .widget<FilledButton>(find.byKey(const Key('device-approve')))
-            .onPressed,
-        isNull);
-    await tester.enterText(
-        find.byKey(const Key('device-owner-password')), 'synthetic-password');
-    await tester.pump();
-    expect(
-        tester
-            .widget<FilledButton>(find.byKey(const Key('device-approve')))
-            .onPressed,
-        isNull);
-    expect(approvals, 0);
-    await tap(tester, 'device-code-matched');
-    await tap(tester, 'device-approve');
-    expect(approvals, 1);
-    expect(approvalBody,
-        {'password': 'synthetic-password', 'confirmationCode': '123456'});
-    expect(find.text('已批准，等待新设备完成连接'), findsOneWidget);
-    expect(find.byKey(const Key('device-owner-password')), findsNothing);
+      tester
+          .widget<CheckboxListTile>(
+            find.byKey(const Key('device-remember-device')),
+          )
+          .value,
+      isTrue,
+    );
+    await tap(tester, 'device-remember-device');
+    await approve(tester);
+    expect(approval?['rememberDevice'], isFalse);
     await tester.pumpWidget(const SizedBox());
     api.dispose();
   });
+
+  testWidgets(
+    'QR stays visual-only; approval requires matching code and password',
+    (tester) async {
+      var approvals = 0;
+      Map<String, dynamic>? approvalBody;
+      final api = mockApi((request) async {
+        if (request.url.path.endsWith('/auth/devices')) {
+          return jsonResponse({'items': []});
+        }
+        if (request.url.path.endsWith('/approve')) {
+          approvals++;
+          approvalBody = jsonDecode(request.body);
+          return jsonResponse({'state': 'APPROVED'});
+        }
+        if (request.url.path.endsWith('/reject')) {
+          return jsonResponse({'state': 'REJECTED'});
+        }
+        if (request.method == 'POST') return jsonResponse(createResponse());
+        return jsonResponse(ownerStatus('CLAIMED'));
+      });
+      await showSettings(tester, api);
+      await tap(tester, 'device-create-pairing');
+      expect(find.byKey(const Key('device-pairing-qr')), findsOneWidget);
+      expect(find.textContaining(secret), findsNothing);
+      expect(find.textContaining('全部邮箱和设置'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pump();
+      expect(find.byKey(const Key('device-pairing-qr')), findsNothing);
+      expect(find.text('123456'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('device-approve')))
+            .onPressed,
+        isNull,
+      );
+      await tester.enterText(
+        find.byKey(const Key('device-owner-password')),
+        'synthetic-password',
+      );
+      await tester.pump();
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('device-approve')))
+            .onPressed,
+        isNull,
+      );
+      expect(approvals, 0);
+      await tap(tester, 'device-code-matched');
+      await tap(tester, 'device-approve');
+      expect(approvals, 1);
+      expect(approvalBody, {
+        'password': 'synthetic-password',
+        'confirmationCode': '123456',
+        'rememberDevice': true,
+      });
+      expect(find.text('已批准，等待新设备完成连接'), findsOneWidget);
+      expect(find.byKey(const Key('device-owner-password')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      api.dispose();
+    },
+  );
 
   testWidgets('late claimed poll cannot undo owner approval', (tester) async {
     final stalePoll = Completer<http.Response>();
@@ -212,8 +258,9 @@ void main() {
     api.dispose();
   });
 
-  testWidgets('logout while waiting discards QR and stale server status',
-      (tester) async {
+  testWidgets('logout while waiting discards QR and stale server status', (
+    tester,
+  ) async {
     final delayed = Completer<http.Response>();
     final api = mockApi((request) async {
       if (request.url.path.endsWith('/auth/devices')) {
@@ -237,84 +284,93 @@ void main() {
   });
 
   testWidgets(
-      'close prompts and best-effort rejects; late creation never reopens',
-      (tester) async {
-    final created = Completer<http.Response>();
-    var closed = 0;
-    final api = mockApi((request) async {
-      if (request.url.path.endsWith('/auth/devices')) {
-        return jsonResponse({'items': []});
-      }
-      return created.future;
-    });
-    await showSettings(tester, api, onClose: () => closed++);
-    await tap(tester, 'device-create-pairing');
-    await tester.tap(find.byTooltip('返回账户设置'));
-    await tester.pumpAndSettle();
-    expect(find.text('离开设备连接？'), findsOneWidget);
-    await tester.tap(find.text('离开'));
-    await tester.pumpAndSettle();
-    expect(closed, 1);
-    created.complete(jsonResponse(createResponse()));
-    await tester.pump();
-    expect(find.byKey(const Key('device-pairing-qr')), findsNothing);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox());
-    api.dispose();
-  });
+    'close prompts and best-effort rejects; late creation never reopens',
+    (tester) async {
+      final created = Completer<http.Response>();
+      var closed = 0;
+      final api = mockApi((request) async {
+        if (request.url.path.endsWith('/auth/devices')) {
+          return jsonResponse({'items': []});
+        }
+        return created.future;
+      });
+      await showSettings(tester, api, onClose: () => closed++);
+      await tap(tester, 'device-create-pairing');
+      await tester.tap(find.byTooltip('返回账户设置'));
+      await tester.pumpAndSettle();
+      expect(find.text('离开设备连接？'), findsOneWidget);
+      await tester.tap(find.text('离开'));
+      await tester.pumpAndSettle();
+      expect(closed, 1);
+      created.complete(jsonResponse(createResponse()));
+      await tester.pump();
+      expect(find.byKey(const Key('device-pairing-qr')), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      api.dispose();
+    },
+  );
 
   testWidgets(
-      'unavailable or forbidden creation leaves device management usable',
-      (tester) async {
-    final api = mockApi((request) async {
-      if (request.url.path.endsWith('/auth/devices')) {
+    'unavailable or forbidden creation leaves device management usable',
+    (tester) async {
+      final api = mockApi((request) async {
+        if (request.url.path.endsWith('/auth/devices')) {
+          return jsonResponse({
+            'items': [device()],
+          });
+        }
         return jsonResponse({
-          'items': [device()]
-        });
-      }
-      return jsonResponse({
-        'error': {'code': 'PAIRING_UNAVAILABLE', 'message': secret}
-      }, 409);
-    });
-    await showSettings(tester, api);
-    await tap(tester, 'device-create-pairing');
-    expect(find.textContaining('可信的 HTTPS'), findsOneWidget);
-    expect(find.text('合成测试手机'), findsOneWidget);
-    expect(find.byKey(const Key('device-revoke-synthetic-device-1')),
-        findsOneWidget);
-    expect(find.textContaining(secret), findsNothing);
-    await tester.pumpWidget(const SizedBox());
-    api.dispose();
-  });
-
-  testWidgets('device revocation requires explicit dialog and refreshes result',
-      (tester) async {
-    var revoked = false;
-    final api = mockApi((request) async {
-      if (request.method == 'DELETE') {
-        revoked = true;
-        return http.Response('', 204);
-      }
-      return jsonResponse({
-        'items': [device(revoked: revoked)]
+          'error': {'code': 'PAIRING_UNAVAILABLE', 'message': secret},
+        }, 409);
       });
-    });
-    await showSettings(tester, api);
-    await tap(tester, 'device-revoke-synthetic-device-1');
-    expect(revoked, isFalse);
-    await tester.pumpAndSettle();
-    await tap(tester, 'device-confirm-revoke');
-    await tester.pumpAndSettle();
-    expect(revoked, isTrue);
-    expect(find.text('已撤销'), findsOneWidget);
-    expect(find.byKey(const Key('device-revoke-synthetic-device-1')),
-        findsNothing);
-    await tester.pumpWidget(const SizedBox());
-    api.dispose();
-  });
+      await showSettings(tester, api);
+      await tap(tester, 'device-create-pairing');
+      expect(find.textContaining('可信的 HTTPS'), findsOneWidget);
+      expect(find.text('合成测试手机'), findsOneWidget);
+      expect(
+        find.byKey(const Key('device-revoke-synthetic-device-1')),
+        findsOneWidget,
+      );
+      expect(find.textContaining(secret), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      api.dispose();
+    },
+  );
 
-  testWidgets('owner pairing fits a narrow viewport without overflow',
-      (tester) async {
+  testWidgets(
+    'device revocation requires explicit dialog and refreshes result',
+    (tester) async {
+      var revoked = false;
+      final api = mockApi((request) async {
+        if (request.method == 'DELETE') {
+          revoked = true;
+          return http.Response('', 204);
+        }
+        return jsonResponse({
+          'items': [device(revoked: revoked)],
+        });
+      });
+      await showSettings(tester, api);
+      await tap(tester, 'device-revoke-synthetic-device-1');
+      expect(revoked, isFalse);
+      await tester.pumpAndSettle();
+      await tap(tester, 'device-confirm-revoke');
+      await tester.pumpAndSettle();
+      expect(revoked, isTrue);
+      expect(find.text('已撤销'), findsOneWidget);
+      expect(
+        find.byKey(const Key('device-revoke-synthetic-device-1')),
+        findsNothing,
+      );
+      await tester.pumpWidget(const SizedBox());
+      api.dispose();
+    },
+  );
+
+  testWidgets('owner pairing fits a narrow viewport without overflow', (
+    tester,
+  ) async {
     final api = mockApi((request) async {
       if (request.url.path.endsWith('/auth/devices')) {
         return jsonResponse({'items': []});

@@ -8,6 +8,74 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
+  test(
+    'canceled remembered password response revokes only its orphan grant',
+    () async {
+      final response = Completer<http.Response>();
+      final started = Completer<void>();
+      var revokes = 0;
+      final refresh = base64Url
+          .encode(List<int>.filled(32, 5))
+          .replaceAll('=', '');
+      final api = MailApi(
+        base: 'https://mail.invalid/api/v1',
+        client: MockClient((request) async {
+          if (request.url.path.endsWith('/device-session/logout')) {
+            revokes++;
+            expect(jsonDecode(request.body), {'refreshToken': refresh});
+            return http.Response('', 204);
+          }
+          started.complete();
+          return response.future;
+        }),
+      );
+      final pending = expectLater(
+        api.login('owner', 'test-only', rememberDevice: true),
+        throwsA(
+          isA<ApiException>().having((e) => e.code, 'code', 'STALE_SESSION'),
+        ),
+      );
+      await started.future;
+      api.token = 'newer-family-access';
+      response.complete(
+        http.Response(
+          jsonEncode({
+            'accessToken': 'canceled-access',
+            'refreshToken': refresh,
+          }),
+          200,
+        ),
+      );
+      await pending;
+      expect(revokes, 1);
+      expect(api.token, 'newer-family-access');
+    },
+  );
+
+  test(
+    'late password login cannot replace a newer login or cleared flow',
+    () async {
+      for (final cleared in [false, true]) {
+        final response = Completer<http.Response>();
+        final api = MailApi(
+          base: 'https://mail.invalid/api/v1',
+          client: MockClient((_) => response.future),
+        );
+        final pending = expectLater(
+          api.login('owner', 'test-only'),
+          throwsA(
+            isA<ApiException>().having((e) => e.code, 'code', 'STALE_SESSION'),
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+        api.token = cleared ? null : 'newer-session';
+        response.complete(http.Response('{"accessToken":"stale-result"}', 200));
+        await pending;
+        expect(api.token, cleared ? null : 'newer-session');
+      }
+    },
+  );
+
   test('session-clear callback fires once on authenticated-to-null only', () {
     var cleared = 0;
     final api = MailApi();

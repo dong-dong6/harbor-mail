@@ -5,15 +5,62 @@ import 'package:http/http.dart' as http;
 
 class ApiException implements Exception {
   final String code, message;
-  ApiException(this.code, this.message);
+  final int? retryAfterSeconds;
+  ApiException(this.code, this.message, {this.retryAfterSeconds});
   @override
   String toString() => '$message ($code)';
+}
+
+/// Durable session policy stays separate from HTTP and is injectable in tests.
+abstract interface class ApiSessionCoordinator {
+  bool get durable;
+  bool get canUseAccess;
+  int get epoch;
+  Future<void> ensureAccess({String? rejectedBearer, bool force = false});
+  Future<void> rejectAccess({
+    required String? requestBearer,
+    required String code,
+  });
+  void invalidate();
 }
 
 class MailApi {
   final http.Client client;
   final String base;
   String? _token;
+  String? _passiveExpiredBearer;
+  int _loginGeneration = 0;
+  ApiSessionCoordinator? deviceSession;
+
+  /// Stable across access rotation, invalidated by lock/logout/account changes.
+  /// Anonymous legacy callers may use this to guard a public login ceremony.
+  bool Function() captureSessionGuard() {
+    final coordinator = deviceSession;
+    final generation = coordinator?.epoch;
+    final bearer = token;
+    if (coordinator?.durable ?? false) {
+      return () =>
+          identical(deviceSession, coordinator) &&
+          coordinator!.durable &&
+          coordinator.epoch == generation &&
+          token != null;
+    }
+    return () => identical(deviceSession, coordinator) && token == bearer;
+  }
+
+  /// Locking hides protected UI without turning a recoverable lock into logout.
+  void clearAccess({bool notify = true}) {
+    _passiveExpiredBearer = null;
+    _loginGeneration++;
+    if (notify) {
+      token = null;
+    } else {
+      _token = null;
+      sessionExpiresAt = null;
+      sessionAccount = null;
+      sessionDeviceId = null;
+    }
+  }
 
   /// Original absolute server expiry; never renewed by local restoration.
   DateTime? sessionExpiresAt;
@@ -26,6 +73,10 @@ class MailApi {
   void Function()? onSessionCleared;
   String? get token => _token;
   set token(String? value) {
+    if (value != _token || value == null) {
+      _loginGeneration++;
+      _passiveExpiredBearer = null;
+    }
     final wasAuthenticated = _token != null;
     if (value != _token) {
       sessionExpiresAt = null;
@@ -62,17 +113,170 @@ class MailApi {
     String? key,
     bool followRedirects = false,
   }) async {
-    final bearer = token;
-    final req = http.Request(method, uri(path, query))
-      ..followRedirects = followRedirects
-      ..headers.addAll(_headersFor(bearer));
-    if (key != null) req.headers['Idempotency-Key'] = key;
-    if (body != null) req.body = jsonEncode(body);
+    return _authenticatedSend((bearer) {
+      final req = http.Request(method, uri(path, query))
+        ..followRedirects = followRedirects
+        ..headers.addAll(_headersFor(bearer));
+      if (key != null) req.headers['Idempotency-Key'] = key;
+      if (body != null) req.body = jsonEncode(body);
+      return req;
+    }).then((response) => response.data);
+  }
+
+  /// Unattended polling may spend an already-live access credential, but must
+  /// never extend the durable idle deadline or retry after an expired rejection.
+  Future<dynamic> requestPassive(
+    String path, {
+    Map<String, String>? query,
+  }) async {
+    if (!(deviceSession?.durable ?? false)) {
+      if (token == null ||
+          (sessionExpiresAt != null &&
+              !sessionExpiresAt!.isAfter(DateTime.now().toUtc()))) {
+        throw ApiException('PASSIVE_ACCESS_EXPIRED', '请主动刷新以恢复连接');
+      }
+      // Preserve legacy request overrides and its unchanged eight-hour policy.
+      return request('GET', path, query: query);
+    }
+    final response = await _authenticatedSend(
+      (bearer) => http.Request('GET', uri(path, query))
+        ..followRedirects = false
+        ..headers.addAll(_headersFor(bearer)),
+      allowRefresh: false,
+    );
+    return response.data;
+  }
+
+  static bool _expiredAccess(String code) => code == 'ACCESS_EXPIRED';
+
+  static String _errorCode(http.Response response) {
     try {
+      final data = jsonDecode(utf8.decode(response.bodyBytes));
+      final error = data is Map ? data['error'] : null;
+      if (error is Map && error['code'] is String) return error['code'];
+    } catch (_) {
+      // An untyped rejection is never evidence that a mutation is safe to retry.
+    }
+    return 'UNAUTHORIZED';
+  }
+
+  Future<({http.Response response, dynamic data})> _authenticatedSend(
+    http.BaseRequest Function(String? bearer) build, {
+    Duration timeout = const Duration(seconds: 30),
+    bool bytesOnly = false,
+    bool allowRefresh = true,
+  }) async {
+    final coordinator = deviceSession;
+    final durable = coordinator?.durable ?? false;
+    final epoch = coordinator?.epoch;
+    void checkCurrent() {
+      if (durable &&
+          (!identical(deviceSession, coordinator) ||
+              coordinator!.epoch != epoch ||
+              token == null)) {
+        throw ApiException('STALE_SESSION', '当前会话已更改，请重新操作');
+      }
+    }
+
+    try {
+      if (!allowRefresh &&
+          (token == null ||
+              token == _passiveExpiredBearer ||
+              (durable
+                  ? !coordinator!.canUseAccess
+                  : (sessionExpiresAt != null &&
+                        !sessionExpiresAt!.isAfter(DateTime.now().toUtc()))))) {
+        throw ApiException('PASSIVE_ACCESS_EXPIRED', '请主动刷新以恢复连接');
+      }
+      if (durable && allowRefresh) {
+        await coordinator!.ensureAccess(
+          rejectedBearer: _passiveExpiredBearer,
+          force:
+              _passiveExpiredBearer != null && _passiveExpiredBearer == token,
+        );
+        if (_passiveExpiredBearer != token) _passiveExpiredBearer = null;
+      }
+      checkCurrent();
+      var bearer = token;
+      var response = await http.Response.fromStream(
+        await client.send(build(bearer)).timeout(timeout),
+      ).timeout(timeout);
+      checkCurrent();
+      if (!allowRefresh &&
+          response.statusCode == 401 &&
+          _expiredAccess(_errorCode(response))) {
+        if (token == bearer) _passiveExpiredBearer = bearer;
+        throw ApiException('PASSIVE_ACCESS_EXPIRED', '请主动刷新以恢复连接');
+      }
+      // Retry once only on a typed, pre-handler expired-access rejection.
+      // Network errors/timeouts never replay a send or any other mutation.
+      if (response.statusCode == 401 &&
+          allowRefresh &&
+          durable &&
+          _expiredAccess(_errorCode(response))) {
+        await coordinator!.ensureAccess(rejectedBearer: bearer, force: true);
+        checkCurrent();
+        bearer = token;
+        response = await http.Response.fromStream(
+          await client.send(build(bearer)).timeout(timeout),
+        ).timeout(timeout);
+        checkCurrent();
+      }
+      if (response.statusCode == 401 && durable) {
+        await coordinator!.rejectAccess(
+          requestBearer: bearer,
+          code: _errorCode(response),
+        );
+      }
+      final data = bytesOnly && response.statusCode < 300
+          ? null
+          : decode(response, requestBearer: bearer);
+      return (response: response, data: data);
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw ApiException('NETWORK', '无法连接服务器，请检查网络后重试');
+    }
+  }
+
+  /// Anonymous, redirect-refusing refresh transport. No access bearer or
+  /// automatic retry can leak into this journaled operation.
+  Future<Map<String, dynamic>> refreshDeviceSession({
+    required String refreshToken,
+    required String nextRefreshToken,
+    required String requestId,
+  }) => _deviceSessionRequest('/auth/refresh', {
+    'refreshToken': refreshToken,
+    'nextRefreshToken': nextRefreshToken,
+    'requestId': requestId,
+  });
+
+  Future<void> revokeDeviceSession(String refreshToken) async {
+    await _deviceSessionRequest('/auth/device-session/logout', {
+      'refreshToken': refreshToken,
+    });
+  }
+
+  Future<Map<String, dynamic>> _deviceSessionRequest(
+    String path,
+    Map<String, String> body,
+  ) async {
+    try {
+      final req = http.Request('POST', uri(path))
+        ..followRedirects = false
+        ..headers['Content-Type'] = 'application/json'
+        ..body = jsonEncode(body);
       final response = await http.Response.fromStream(
         await client.send(req).timeout(const Duration(seconds: 30)),
       ).timeout(const Duration(seconds: 30));
-      return decode(response, requestBearer: bearer);
+      if (response.bodyBytes.length > 32768) {
+        throw ApiException('INVALID_RESPONSE', '设备登录响应过大');
+      }
+      final value = decode(response, requestBearer: null);
+      if (value is! Map<String, dynamic>) {
+        throw ApiException('INVALID_RESPONSE', '无法读取设备登录响应');
+      }
+      return value;
     } on ApiException {
       rethrow;
     } catch (_) {
@@ -81,7 +285,9 @@ class MailApi {
   }
 
   dynamic decode(http.Response response, {required String? requestBearer}) {
-    if (response.statusCode == 401) _clearRejectedSession(requestBearer);
+    if (response.statusCode == 401 && !(deviceSession?.durable ?? false)) {
+      _clearRejectedSession(requestBearer);
+    }
     if (response.statusCode >= 300 && response.statusCode < 400) {
       throw ApiException('API_REDIRECT', '服务器地址发生重定向，请核对服务器 URL');
     }
@@ -101,22 +307,61 @@ class MailApi {
       throw ApiException(
         error?['code']?.toString() ?? 'HTTP_${response.statusCode}',
         error?['message']?.toString() ?? '操作未完成',
+        retryAfterSeconds: error is Map && error['retryAfterSeconds'] is int
+            ? error['retryAfterSeconds'] as int
+            : int.tryParse(response.headers['retry-after'] ?? ''),
       );
     }
     return data;
   }
 
-  Future<void> login(String username, String password) async {
+  Future<Map<String, dynamic>> login(
+    String username,
+    String password, {
+    bool rememberDevice = false,
+    String? deviceName,
+  }) async {
+    final generation = ++_loginGeneration;
     final result = await request(
       'POST',
       '/auth/login',
-      body: {'username': username, 'password': password},
+      body: {
+        'username': username,
+        'password': password,
+        if (rememberDevice) 'rememberDevice': true,
+        if (rememberDevice && deviceName != null) 'deviceName': deviceName,
+      },
     );
+    if (generation != _loginGeneration) {
+      final proof = result is Map ? result['refreshToken'] : null;
+      if (proof is String && RegExp(r'^[A-Za-z0-9_-]{43}$').hasMatch(proof)) {
+        try {
+          await revokeDeviceSession(proof);
+        } catch (_) {}
+      }
+      throw ApiException('STALE_SESSION', '本次登录已取消');
+    }
+    if (result is! Map<String, dynamic> ||
+        result['accessToken'] is! String ||
+        (result['accessToken'] as String).isEmpty ||
+        (result['accessToken'] as String).length > 8192 ||
+        RegExp(r'[^\x21-\x7e]').hasMatch(result['accessToken'] as String)) {
+      final proof = result is Map ? result['refreshToken'] : null;
+      if (proof is String &&
+          RegExp(r'^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$').hasMatch(proof)) {
+        try {
+          await revokeDeviceSession(proof);
+        } catch (_) {}
+      }
+      throw ApiException('INVALID_RESPONSE', '服务器返回了无效的登录响应');
+    }
     token = result['accessToken'];
     sessionExpiresAt = DateTime.tryParse(
       result['expiresAt']?.toString() ?? '',
     )?.toUtc();
-    sessionAccount = username;
+    sessionAccount = result['accountName']?.toString() ?? username;
+    sessionDeviceId = result['deviceId']?.toString();
+    return Map<String, dynamic>.from(result);
   }
 
   Future<OAuthSettingsSnapshot> oauthSettings() async =>
@@ -171,35 +416,31 @@ class MailApi {
     String name,
     Uint8List bytes,
   ) async {
-    final bearer = token;
-    final req = http.MultipartRequest(
-      'POST',
-      uri('/drafts/$draftId/attachments'),
-    )..followRedirects = false;
-    if (bearer != null) req.headers['Authorization'] = 'Bearer $bearer';
-    req.files.add(http.MultipartFile.fromBytes('file', bytes, filename: name));
-    return Map<String, dynamic>.from(
-      decode(
-        await http.Response.fromStream(
-          await client.send(req).timeout(const Duration(seconds: 60)),
-        ),
-        requestBearer: bearer,
-      ),
-    );
+    final result = await _authenticatedSend((bearer) {
+      final req = http.MultipartRequest(
+        'POST',
+        uri('/drafts/$draftId/attachments'),
+      )..followRedirects = false;
+      if (bearer != null) req.headers['Authorization'] = 'Bearer $bearer';
+      req.files.add(
+        http.MultipartFile.fromBytes('file', bytes, filename: name),
+      );
+      return req;
+    }, timeout: const Duration(seconds: 60));
+    return Map<String, dynamic>.from(result.data);
   }
 
   Future<Uint8List> download(String id) async {
-    final bearer = token;
-    final request = http.Request('GET', uri('/attachments/$id/content'))
-      ..followRedirects = false
-      ..headers.addAll(_headersFor(bearer));
-    final response = await http.Response.fromStream(
-      await client.send(request).timeout(const Duration(seconds: 60)),
-    ).timeout(const Duration(seconds: 60));
-    if (response.statusCode >= 300) {
-      decode(response, requestBearer: bearer);
-    }
-    return response.bodyBytes;
+    final result = await _authenticatedSend(
+      (bearer) {
+        return http.Request('GET', uri('/attachments/$id/content'))
+          ..followRedirects = false
+          ..headers.addAll(_headersFor(bearer));
+      },
+      timeout: const Duration(seconds: 60),
+      bytesOnly: true,
+    );
+    return result.response.bodyBytes;
   }
 
   /// Opt-in only. All network requests stay on the authenticated mail API.
@@ -209,9 +450,11 @@ class MailApi {
     String accountId, {
     bool Function()? isCurrent,
   }) async {
-    final bearer = token;
+    if (deviceSession?.durable ?? false) await deviceSession!.ensureAccess();
+    var bearer = token;
+    final sessionCurrent = captureSessionGuard();
     bool current() =>
-        bearer != null && token == bearer && (isCurrent?.call() ?? true);
+        bearer != null && sessionCurrent() && (isCurrent?.call() ?? true);
     if (!current()) throw ApiException('UNAUTHORIZED', '请重新登录');
     final path = '/messages/${Uri.encodeComponent(messageId)}/images';
     final manifest = await request(
@@ -220,6 +463,7 @@ class MailApi {
       query: {'accountId': accountId},
       followRedirects: false,
     );
+    bearer = token;
     if (!current()) throw ApiException('UNAUTHORIZED', '请重新登录');
     if (manifest is! Map ||
         manifest['items'] is! List ||
@@ -244,6 +488,11 @@ class MailApi {
     for (final item in items) {
       if (!current() || totalBytes >= maxBatchBytes) break;
       try {
+        if (deviceSession?.durable ?? false) {
+          await deviceSession!.ensureAccess();
+        }
+        if (!current()) break;
+        bearer = token;
         final req =
             http.Request(
                 'GET',
@@ -256,8 +505,16 @@ class MailApi {
             .send(req)
             .timeout(const Duration(seconds: 12));
         if (streamed.statusCode == 401) {
-          _clearRejectedSession(bearer);
-          await streamed.stream.listen((_) {}).cancel();
+          if (deviceSession?.durable ?? false) {
+            final response = await http.Response.fromStream(streamed);
+            await deviceSession!.rejectAccess(
+              requestBearer: bearer,
+              code: _errorCode(response),
+            );
+          } else {
+            _clearRejectedSession(bearer);
+            await streamed.stream.listen((_) {}).cancel();
+          }
           throw ApiException('UNAUTHORIZED', '请重新登录');
         }
         if (streamed.statusCode != 200 ||
@@ -305,6 +562,9 @@ class MailApi {
   }
 
   void dispose() {
+    _loginGeneration++;
+    deviceSession?.invalidate();
+    deviceSession = null;
     token = null;
     client.close();
   }

@@ -42,12 +42,12 @@ The test suite deletes its synthetic data. **Never point TEST_DATABASE_URL at a 
 
 ## Phase A device pairing (development)
 
-A signed-in password session can create a two-minute, one-time QR code. A native app claims it
+A signed-in memory-only owner browser session can create a two-minute, one-time QR code. A native app claims it
 with its own S256 verifier, then both screens display a six-digit confirmation code. The browser
 owner must compare the codes and re-enter the current owner password. Approval grants the existing
 single-owner scope: full mail and settings access. A claimed device cannot create another pairing.
-The independent device bearer lasts at most eight hours and has no refresh token. Clients keep it
-in memory only. Token restart persistence is not provided. Client local unlocking and server WebAuthn are separate features documented below.
+By default the independent device bearer lasts at most eight hours and has no refresh token. Clients keep
+it in memory only. Explicit remembered-device approval instead uses the durable protocol below. Client local unlocking and server WebAuthn are separate features documented below.
 
 Set `MAIL_ALLOWED_ORIGIN` to the exact reachable server origin, for example
 `https://mail.example.com` or `https://mail.example.com:8443`, without a trailing slash or path.
@@ -56,7 +56,7 @@ request. HTTPS is mandatory outside explicit demo mode. Demo permits only config
 origins, which cannot be used by a separate physical phone to reach this machine. Invalid/missing
 pairing-origin configuration disables pairing with `PAIRING_UNAVAILABLE` without breaking login.
 
-Only the creating password session can inspect, approve or reject its pairing. Browser logout or
+Only the creating owner browser session can inspect, approve or reject its pairing. Browser logout or
 expiry invalidates pending pairings; already redeemed device sessions remain independent. The
 owner's device list supports immediate, idempotent revocation of all tokens for one device. Device
 logout revokes that device's session. Approval-password failures return 403
@@ -78,7 +78,8 @@ Standard WebAuthn endpoints are implemented under `/api/v1/auth/passkeys`. The s
 registration and assertions with Yubico `webauthn-server-core` 2.10.1, including the 2026 credential
 ownership security fix. Existing owner browser bearer plus current password is required to add or
 remove a passkey. Discoverable credentials and user verification are required; successful assertions
-issue the same eight-hour owner session as password login. Password recovery remains available.
+issue an eight-hour owner session by default, or a remembered device family when the options
+request explicitly opted in. Password recovery remains available.
 
 Use the exact stable HTTPS `MAIL_ALLOWED_ORIGIN`; its hostname is the RP ID. Ports and subdomains are
 not interchangeable. Explicit demo mode supports `http://localhost:<port>` for disposable virtual
@@ -89,5 +90,98 @@ See [Passkey contract](../docs/PASSKEY_CONTRACT.md) for configuration, security 
 
 `PasskeyApiTest` uses temporary P-256 keys to exercise actual ES256 WebAuthn verification and failure
 cases over localhost HTTP, on H2 and disposable PostgreSQL. It never enrolls real authenticators.
-Removing a passkey prevents future sign-in but does not revoke existing sessions. No refresh token,
-private passkey export, or automatic real-device enrollment is provided.
+Removing a passkey prevents future sign-in but does not revoke existing sessions. No private passkey
+export or automatic real-device enrollment is provided.
+
+## Opt-in remembered device sessions (development)
+
+V8 adds durable session families without changing the legacy access-token table shape or upgrading
+existing tokens. Password login may explicitly send `rememberDevice: true` and optional `deviceName`.
+Pairing becomes durable only when its browser owner approves with `rememberDevice: true`; the QR,
+claimant and redemption request cannot choose this. Omission/false preserves eight-hour memory-only
+login and pairing. Passkey authentication options also accept `rememberDevice: true` and optional
+`deviceName`. The server binds this choice to the single-use assertion request; verification accepts
+only `requestId` and `credential` and cannot add/change the choice. Only a successfully verified
+assertion issues a remembered family; canceled, failed or expired ceremonies issue none. Remembered
+password and passkey logins are device sessions, so they cannot create pairings or manage passkeys;
+use a fresh memory-only browser login for that.
+
+Defaults and bounded configuration:
+
+| Variable | Default | Valid range |
+| --- | --- | --- |
+| `MAIL_DEVICE_ACCESS_SECONDS` | 900 (15 minutes) | 60–3600 seconds |
+| `MAIL_DEVICE_IDLE_DAYS` | 30 | 1–90 days, no more than absolute |
+| `MAIL_DEVICE_ABSOLUTE_DAYS` | 365 | 1–730 days |
+
+Access is additionally bounded by the current idle and absolute expiry. Only a successful new
+rotation advances idle expiry. Retried rotations, API use and background polling do not keep a
+session alive. Absolute expiry is fixed at issuance. Both expiries and revocation are checked on
+every authenticated request. All family access tokens are invalidated immediately on logout,
+owner device revocation or refresh-token reuse.
+
+### Client-prepared refresh protocol
+
+The native client must serialize refresh across all callers/processes and persist a pending record
+containing the old refresh secret, a fresh CSPRNG successor secret and a UUIDv4 request ID *before*
+sending any bytes. Each secret is exactly 32 bytes encoded as canonical unpadded base64url. Post JSON
+only to `/api/v1/auth/refresh`:
+
+```json
+{"refreshToken":"<old>","nextRefreshToken":"<next>","requestId":"<lowercase UUIDv4>"}
+```
+
+Success returns `accessToken`, `expiresAt`, `refreshToken` (the submitted successor),
+`refreshExpiresAt` (idle limit), `sessionExpiresAt` (absolute limit), `deviceId`, `accountName`, and
+`permission`. Durable password login also returns `demoMode`. Confirm the echoed successor matches
+and atomically replace the pending record with the new session before using the new access token.
+After timeout, process death, connection loss or uncertain server commit, retry **the exact saved
+old/next/request-ID tuple**. Never invent a new tuple using the old secret.
+
+The server transaction locks the family and stores only SHA-256 secret hashes. An exact retry while
+the successor remains current returns fresh short-lived access and does not advance idle expiry or
+invalidate previously issued access. An exact older transition after a later successful rotation
+returns `409 STALE_ROTATION` without issuing credentials or revoking the family. A consumed old
+secret with different successor/request ID commits full family revocation and returns
+`401 REFRESH_REUSED`. Unknown proofs return `401 INVALID_REFRESH` and cannot revoke any family.
+Other terminal refresh errors are `SESSION_EXPIRED` and `SESSION_REVOKED`. `409 INVALID_ROTATION`
+rejects a successor previously seen in any family or a duplicate request ID without mutation.
+
+The authentication filter returns `401 ACCESS_EXPIRED` only when an expired device bearer belongs
+to a still-live family; this rejection occurs before endpoint execution. A client may refresh once
+and retry such a request. Do not replay a mail-send or other mutation after timeout, ambiguous
+network failure, generic handler 401, or an arbitrary HTTP failure. Expired durable access proofs
+are retained up to 24 hours for this classification; older missing proofs return `UNAUTHORIZED`.
+Clients should proactively refresh based on saved expiry when resuming after a longer absence.
+
+`POST /api/v1/auth/device-session/logout` accepts only `{"refreshToken":"<current or historical>"}`.
+It works with expired access, revokes all family access and is idempotent (204). Unknown proofs also
+return 204. The existing bearer logout and device-list revoke routes revoke the entire associated
+family. Offline local logout cannot guarantee server revocation; clients must say so rather than
+claiming the device has been revoked.
+
+Refresh/logout accept exact POST routes and JSON content types, reject query parameters and unknown
+body fields, cap JSON bodies at 4 KiB, never redirect secrets and return no-store responses. Refresh
+and proof logout share bounded observed-IP (120/minute) and global (600/minute) limits. Additionally,
+each family permits at most 10 new rotations/minute and 30/hour (persisted sliding windows), and
+10 exact retries/minute (persisted counter). The family caps are independent of IP and survive
+server restarts; 429 includes `Retry-After` and `error.retryAfterSeconds`. Keep the saved tuple and
+retry after that delay. Historical replay detection and logout are not blocked by family quotas. Never enable
+proxy/APM request-body logging for any authentication endpoint. Application error logs include only
+the request ID and exception class, never submitted bodies or token values. TLS is required at the
+production reverse proxy; none of this configures real device grants or production settings.
+
+Retained transition records are needed to distinguish replay from delayed legitimate requests and
+allow historical-proof logout. They are indexed by hash and family; retain them until their family
+is removed 24 hours after its effective expiry by subsequent pairing/session creation. At the
+normal 15-minute cadence one continuously used year-long family has about 35,040 transition records.
+The public rate limits also apply to exact retries (each can mint another overlapping access token).
+There is no small lifetime rotation-count limit that unexpectedly logs a daily-use device out.
+Operators should size and monitor database storage and authentication traffic, particularly for
+compromised clients rotating much faster than their access-token lifetime. Expiry indexes support
+cleanup; no independent background refresh heartbeat is implemented.
+
+`DeviceSessionApiTest` runs synthetic H2 and disposable PostgreSQL HTTP fixtures, injectable-clock
+expiry tests, same-tuple/conflicting concurrent refresh races, refresh-vs-revoke/logout races,
+commit/rollback recovery and delayed historical duplicates. Real Android KeyStore/process-death,
+biometric/device-policy, TLS/reverse-proxy and production release acceptance remain separate gates.

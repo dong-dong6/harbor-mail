@@ -10,6 +10,7 @@ import 'package:harbor_mail/api.dart';
 import 'package:harbor_mail/mail_body.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'durable_guard_fixture.dart';
 
 const _source = 'https://tracking.example.invalid/banner';
 const _imageHtml = '<h2>HTML message</h2><img src="$_source" alt="Banner">';
@@ -69,6 +70,90 @@ Finder get _table =>
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  for (final retire in [false, true]) {
+    testWidgets(
+      'link approval survives rotation but rejects retired family: $retire',
+      (tester) async {
+        final identity = DurableGuardFixture();
+        final api = MailApi()..token = 'synthetic-old';
+        api.deviceSession = identity;
+        addTearDown(api.dispose);
+        final calls = <MethodCall>[];
+        const channel = MethodChannel('plugins.flutter.io/url_launcher');
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel,
+          (call) async {
+            calls.add(call);
+            return true;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            channel,
+            null,
+          ),
+        );
+        await _pump(
+          tester,
+          api: api,
+          html: '<a href="https://example.invalid/report">Open report</a>',
+        );
+        await tester.tap(find.text('Open report', findRichText: true));
+        await tester.pumpAndSettle();
+        api.token = 'synthetic-new';
+        if (retire) identity.epoch++;
+        await tester.tap(find.text('在浏览器中打开'));
+        await tester.pumpAndSettle();
+        expect(calls, hasLength(retire ? 0 : 1));
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('native approved image batch survives durable access rotation', (
+    tester,
+  ) async {
+    final pending = Completer<http.Response>();
+    var calls = 0;
+    final api = MailApi(
+      base: 'https://mail.example.invalid/api/v1',
+      client: MockClient((request) async {
+        calls++;
+        if (calls == 1) return _manifest();
+        if (calls == 2) return pending.future;
+        return http.Response.bytes(
+          _png,
+          200,
+          headers: {'content-type': 'image/png'},
+        );
+      }),
+    )..token = 'synthetic-before-refresh';
+    api.deviceSession = DurableGuardFixture();
+    addTearDown(api.dispose);
+    await _pump(tester, api: api);
+    final button = tester.widget<TextButton>(
+      find.widgetWithText(TextButton, '显示本封邮件的远程图片'),
+    );
+    late Future<void> loading;
+    await tester.runAsync(() async {
+      loading = (button.onPressed! as Future<void> Function())();
+      await Future<void>.delayed(Duration.zero);
+    });
+    await tester.pump();
+    expect(calls, 2);
+    api.token = 'synthetic-after-refresh';
+    await tester.runAsync(() async {
+      pending.complete(
+        http.Response.bytes(_png, 200, headers: {'content-type': 'image/png'}),
+      );
+      await loading;
+    });
+    await tester.pumpAndSettle();
+    expect(find.byType(Image), findsOneWidget);
+    expect(calls, 3);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'native reader renders rich HTML and tables, with selectable plaintext toggle',

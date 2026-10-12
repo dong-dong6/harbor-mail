@@ -85,6 +85,9 @@ MailApi fake({bool noAccounts = false, int messageCount = 1}) => MailApi(
 Future<void> signIn(WidgetTester tester) async {
   await tester.enterText(find.byType(TextField).at(0), 'owner');
   await tester.enterText(find.byType(TextField).at(1), 'test-only');
+  await tester.ensureVisible(find.text('登录'));
+  await tester.pumpAndSettle();
+  expect(find.text('登录').hitTestable(), findsOneWidget);
   await tester.tap(find.text('登录'));
   await tester.pumpAndSettle();
 }

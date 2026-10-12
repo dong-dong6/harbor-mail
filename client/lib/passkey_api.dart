@@ -41,9 +41,29 @@ class PasskeySession {
     required this.accessToken,
     required this.expiresAt,
     required this.accountName,
+    this.refreshToken,
+    this.refreshExpiresAt,
+    this.sessionExpiresAt,
+    this.deviceId,
   });
   final String accessToken, accountName;
   final DateTime expiresAt;
+  final String? refreshToken, deviceId;
+  final DateTime? refreshExpiresAt, sessionExpiresAt;
+  bool get durable => refreshToken != null;
+  Map<String, dynamic> get sessionResponse => toLoginResponse();
+  Map<String, dynamic> toLoginResponse() => {
+    'accessToken': accessToken,
+    'expiresAt': expiresAt.toUtc().toIso8601String(),
+    'accountName': accountName,
+    'permission': permission,
+    if (durable) ...{
+      'refreshToken': refreshToken,
+      'deviceId': deviceId,
+      'refreshExpiresAt': refreshExpiresAt!.toUtc().toIso8601String(),
+      'sessionExpiresAt': sessionExpiresAt!.toUtc().toIso8601String(),
+    },
+  };
   String get permission => 'OWNER_FULL_ACCESS';
 
   factory PasskeySession.fromJson(dynamic value) {
@@ -51,17 +71,45 @@ class PasskeySession {
     final token = _string(map, 'accessToken', 4096);
     final expires = _date(map, 'expiresAt');
     final now = DateTime.now().toUtc();
+    final hasDurable = map.containsKey('refreshToken');
+    final maximum = now.add(
+      hasDurable ? const Duration(minutes: 60) : const Duration(hours: 8),
+    );
     if (RegExp(r'\s').hasMatch(token) ||
         map['permission'] != 'OWNER_FULL_ACCESS' ||
         !expires.isAfter(now) ||
-        expires.isAfter(now.add(const Duration(hours: 8, seconds: 15)))) {
+        expires.isAfter(maximum.add(const Duration(seconds: 15)))) {
       throw _invalid();
     }
-    final maximum = now.add(const Duration(hours: 8));
+    String? refresh, device;
+    DateTime? idle, absolute;
+    if (hasDurable) {
+      refresh = _string(map, 'refreshToken', 43);
+      if (!RegExp(r'^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$').hasMatch(refresh)) {
+        throw _invalid();
+      }
+      device = _string(map, 'deviceId', 128);
+      idle = _date(map, 'refreshExpiresAt');
+      absolute = _date(map, 'sessionExpiresAt');
+      if (!idle.isAfter(now) ||
+          !absolute.isAfter(now) ||
+          idle.isAfter(absolute) ||
+          idle.isAfter(now.add(const Duration(days: 90, seconds: 15))) ||
+          absolute.isAfter(now.add(const Duration(days: 730, seconds: 15)))) {
+        throw _invalid();
+      }
+    } else if (map.containsKey('refreshExpiresAt') ||
+        map.containsKey('sessionExpiresAt')) {
+      throw _invalid();
+    }
     return PasskeySession(
       accessToken: token,
       expiresAt: expires.isAfter(maximum) ? maximum : expires,
       accountName: _string(map, 'accountName', 320),
+      refreshToken: refresh,
+      refreshExpiresAt: idle,
+      sessionExpiresAt: absolute,
+      deviceId: device,
     );
   }
 }
@@ -101,8 +149,9 @@ class PasskeyOptions {
 /// Bounded same-server transport. Public endpoints never inherit the bearer;
 /// registration/deletion bind to the exact owner session which initiated them.
 class PasskeyApi {
-  PasskeyApi(this.mailApi);
+  PasskeyApi(this.mailApi) : _sessionCurrent = mailApi.captureSessionGuard();
   final MailApi mailApi;
+  final bool Function() _sessionCurrent;
 
   Future<PasskeyCapabilities> capabilities() async {
     final map = _object(await _request('GET', '/capabilities'));
@@ -151,12 +200,18 @@ class PasskeyApi {
     ),
   );
 
-  Future<PasskeyOptions> authenticationOptions() async {
+  Future<PasskeyOptions> authenticationOptions({
+    bool rememberDevice = false,
+    String? deviceName,
+  }) async {
     final options = PasskeyOptions.fromJson(
       await _request(
         'POST',
         '/authentication/options',
-        body: <String, dynamic>{},
+        body: <String, dynamic>{
+          if (rememberDevice) 'rememberDevice': true,
+          if (rememberDevice && deviceName != null) 'deviceName': deviceName,
+        },
       ),
       registration: false,
     );
@@ -221,8 +276,22 @@ class PasskeyApi {
     String? bearer,
     Map<String, dynamic>? body,
   }) async {
-    if (bearer != null && (bearer.isEmpty || mailApi.token != bearer)) {
+    if (bearer != null &&
+        (bearer.isEmpty ||
+            !_sessionCurrent() ||
+            (!(mailApi.deviceSession?.durable ?? false) &&
+                mailApi.token != bearer))) {
       throw ApiException('UNAUTHORIZED', '请重新登录');
+    }
+    if (bearer != null && (mailApi.deviceSession?.durable ?? false)) {
+      // Bound to a stable family/epoch, even if its original bearer rotated.
+      final data = await mailApi.request(
+        method,
+        '/auth/passkeys$suffix',
+        body: body,
+      );
+      if (!_sessionCurrent()) throw ApiException('UNAUTHORIZED', '请重新登录');
+      return data;
     }
     final request = http.Request(method, mailApi.uri('/auth/passkeys$suffix'))
       ..followRedirects = false

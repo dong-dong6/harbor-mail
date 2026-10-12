@@ -209,12 +209,17 @@ public class PasskeyService {
   }
 
   Map<String, Object> authenticationOptions(Map<String, Object> body, String ip) {
-    publicRateLimit(ip); DevicePairingService.fields(body);
+    publicRateLimit(ip);
+    if (body == null || !Set.of("rememberDevice", "deviceName").containsAll(body.keySet()))
+      throw ApiError.bad("Unexpected authentication options fields");
+    boolean remember = DeviceSessionService.remember(body);
+    String deviceName = DeviceSessionService.deviceName(body);
     var request = relyingParty().startAssertion(StartAssertionOptions.builder()
         .userVerification(UserVerificationRequirement.REQUIRED).timeout(LIFETIME).build());
     return store.write(() -> {
       try {
         String id = saveRequest("AUTHENTICATE", null, null, request.toJson());
+        store.db.update("UPDATE passkey_request SET remember_device=?,device_name=? WHERE id=?", remember, remember ? deviceName : null, id);
         return Json.map("requestId", id, "publicKey", Json.decode(request.toCredentialsGetJson()).get("publicKey"));
       } catch (com.fasterxml.jackson.core.JsonProcessingException error) { throw new IllegalStateException("Cannot serialize passkey options", error); }
     });
@@ -240,7 +245,8 @@ public class PasskeyService {
         store.db.update("UPDATE passkey_credential SET signature_count=?,backup_state=?,last_used_at=? WHERE owner_id=1 AND credential_id=?",
             Math.max(result.getSignatureCount(), result.getCredential().getSignatureCount()), result.isBackedUp(),
             System.currentTimeMillis(), result.getCredential().getCredentialId().getBase64Url());
-        var session = security.issueOwnerSession();
+        var session = Boolean.TRUE.equals(saved.get("remember_device"))
+            ? security.deviceSessions.issue((String) saved.get("device_name")) : security.issueOwnerSession();
         session.put("accountName", pairing.accountName()); session.put("permission", DevicePairingService.PERMISSION);
         return session;
       } catch (ApiError error) { throw error; }

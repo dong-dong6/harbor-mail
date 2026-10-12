@@ -96,6 +96,60 @@ class PasskeyApiTest {
     var row=store.one("SELECT * FROM passkey_credential"); assertEquals(1L,((Number)row.get("signature_count")).longValue()); assertNotNull(row.get("last_used_at"));
     assertFalse(row.toString().contains(encoded(auth.key().getPrivate().getEncoded())));
   }
+  @Test void rememberedVerifiedPasskeyCreatesRotatingDeviceSession() throws Exception {
+    var auth = enroll(5);
+    var opts = ok(call("POST", "/authentication/options", Json.map("rememberDevice", true, "deviceName", "Synthetic passkey phone"), null));
+    var saved = store.one("SELECT * FROM passkey_request WHERE id=?", opts.get("requestId"));
+    assertEquals(true, saved.get("remember_device")); assertEquals("Synthetic passkey phone", saved.get("device_name"));
+    assertEquals(0, store.db.queryForObject("SELECT COUNT(*) FROM device_session", Integer.class));
+    long before = System.currentTimeMillis();
+    var result = ok(call("POST", "/authentication/verify", verifyBody(opts, auth.assertion(opts, ORIGIN, RP, 5, 1, auth.handle())), null));
+    assertNotNull(result.get("refreshToken"));
+    long expires = Instant.parse((String) result.get("expiresAt")).toEpochMilli();
+    assertTrue(expires >= before + 900_000L && expires <= System.currentTimeMillis() + 900_000L);
+    assertEquals("Synthetic passkey phone", store.one("SELECT * FROM paired_device").get("name"));
+    assertEquals(1, store.db.queryForObject("SELECT COUNT(*) FROM device_session", Integer.class));
+    assertEquals(403, call("POST", "/registration/options", Json.map("password", "demo-local-only", "name", "No"), (String) result.get("accessToken")).statusCode());
+    var rotated = security.deviceSessions.refresh(Json.map("refreshToken", result.get("refreshToken"), "nextRefreshToken", security.token(), "requestId", Store.id()), "synthetic");
+    assertEquals(result.get("deviceId"), rotated.get("deviceId"));
+  }
+
+  @Test void rememberIntentIsBoundToOptionsAndCannotBeAmendedAtVerification() throws Exception {
+    var auth = enroll(5);
+    for (boolean remember : List.of(false, true)) {
+      var opts = ok(call("POST", "/authentication/options", Json.map("rememberDevice", remember, "deviceName", "Original name"), null));
+      var body = verifyBody(opts, auth.assertion(opts, ORIGIN, RP, 5, remember ? 2 : 1, auth.handle()));
+      var tampered = new LinkedHashMap<>(body); tampered.put("rememberDevice", !remember);
+      assertEquals(400, call("POST", "/authentication/verify", tampered, null).statusCode());
+      tampered = new LinkedHashMap<>(body); tampered.put("deviceName", "Changed name");
+      assertEquals(400, call("POST", "/authentication/verify", tampered, null).statusCode());
+      assertEquals(0, store.db.queryForObject("SELECT COUNT(*) FROM device_session", Integer.class));
+      var session = ok(call("POST", "/authentication/verify", body, null));
+      assertEquals(remember, session.containsKey("refreshToken"));
+    }
+    assertEquals("Original name", store.one("SELECT * FROM paired_device").get("name"));
+    for (Object value : List.of("true", 1, List.of(true)))
+      assertEquals(400, call("POST", "/authentication/options", Json.map("rememberDevice", value), null).statusCode());
+    assertEquals(400, call("POST", "/authentication/options", Json.map("rememberDevice", true, "deviceName", "bad\nname"), null).statusCode());
+    assertEquals(400, call("POST", "/registration/options", Json.map("password", "demo-local-only", "name", "No", "rememberDevice", true), browser).statusCode());
+  }
+
+  @Test void canceledFailedAndExpiredRememberedAssertionsNeverCreateFamily() throws Exception {
+    var auth = enroll(5);
+    // Options alone (for a canceled prompt) do not grant or persist any session secret.
+    ok(call("POST", "/authentication/options", Json.map("rememberDevice", true), null));
+    assertEquals(0, store.db.queryForObject("SELECT COUNT(*) FROM device_session", Integer.class));
+    for (String failure : List.of("origin", "verification", "expiry")) {
+      var opts = ok(call("POST", "/authentication/options", Json.map("rememberDevice", true), null));
+      if (failure.equals("expiry")) store.db.update("UPDATE passkey_request SET expires_at=? WHERE id=?", System.currentTimeMillis() - 1, opts.get("requestId"));
+      var body = verifyBody(opts, auth.assertion(opts, failure.equals("origin") ? "https://attacker.invalid" : ORIGIN, RP,
+          failure.equals("verification") ? 1 : 5, 1, auth.handle()));
+      assertEquals(401, call("POST", "/authentication/verify", body, null).statusCode());
+      assertEquals(0, store.db.queryForObject("SELECT COUNT(*) FROM device_session", Integer.class));
+    }
+    assertEquals(2, store.db.queryForObject("SELECT COUNT(*) FROM access_token", Integer.class));
+  }
+
   @Test void registrationOptionsRequireResidentCredentialUvAndExcludeExisting() throws Exception {
     var auth=enroll(5); var opts=publicKey(options()); var selection=(Map<?,?>)opts.get("authenticatorSelection");
     assertEquals("required",selection.get("userVerification")); assertEquals("required",selection.get("residentKey")); assertEquals("none",opts.get("attestation")); assertEquals(120000,opts.get("timeout"));

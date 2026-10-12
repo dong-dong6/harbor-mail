@@ -14,6 +14,111 @@ Matcher code(String value) =>
     isA<ApiException>().having((e) => e.code, 'code', value);
 void main() {
   test(
+    'canceled durable verification revokes returned orphan family before handover',
+    () async {
+      final verify = Completer<http.Response>();
+      final started = Completer<void>();
+      var revoked = 0;
+      final now = DateTime.now().toUtc();
+      final refresh = base64Url
+          .encode(List<int>.filled(32, 9))
+          .replaceAll('=', '');
+      final mail = MailApi(
+        base: 'https://mail.example.test/api/v1',
+        client: MockClient((r) async {
+          if (r.url.path.endsWith('/device-session/logout')) {
+            revoked++;
+            expect(jsonDecode(r.body), {'refreshToken': refresh});
+            return http.Response('', 204);
+          }
+          if (r.url.path.endsWith('/options')) {
+            return passkeyJson(passkeyOptions());
+          }
+          started.complete();
+          return verify.future;
+        }),
+      );
+      final flow = PasskeyFlow(
+        PasskeyApi(mail),
+        authenticator: SyntheticPasskeyAuthenticator(),
+      );
+      final result = expectLater(
+        flow.authenticate(rememberDevice: true),
+        throwsA(code('PASSKEY_CANCELLED')),
+      );
+      await started.future;
+      flow.cancel();
+      verify.complete(
+        passkeyJson({
+          ...passkeySession(),
+          'expiresAt': now.add(const Duration(minutes: 15)).toIso8601String(),
+          'refreshToken': refresh,
+          'deviceId': 'orphan-synthetic-family',
+          'refreshExpiresAt': now
+              .add(const Duration(days: 30))
+              .toIso8601String(),
+          'sessionExpiresAt': now
+              .add(const Duration(days: 365))
+              .toIso8601String(),
+        }),
+      );
+      await result;
+      expect(revoked, 1);
+      expect(mail.token, isNull);
+    },
+  );
+
+  test(
+    'remembered passkey choice binds at options, verification cannot upgrade it',
+    () async {
+      final requests = <http.Request>[];
+      final now = DateTime.now().toUtc();
+      final durable = <String, dynamic>{
+        ...passkeySession(),
+        'expiresAt': now.add(const Duration(minutes: 15)).toIso8601String(),
+        'refreshToken': base64Url
+            .encode(List<int>.filled(32, 7))
+            .replaceAll('=', ''),
+        'refreshExpiresAt': now.add(const Duration(days: 30)).toIso8601String(),
+        'sessionExpiresAt': now
+            .add(const Duration(days: 365))
+            .toIso8601String(),
+        'deviceId': 'synthetic-family',
+      };
+      final mail = MailApi(
+        base: 'https://mail.example.test/api/v1',
+        client: MockClient((r) async {
+          requests.add(r);
+          expect(r.headers['Authorization'], isNull);
+          return passkeyJson(
+            r.url.path.endsWith('/options') ? passkeyOptions() : durable,
+          );
+        }),
+      );
+      final session = await PasskeyFlow(
+        PasskeyApi(mail),
+        authenticator: SyntheticPasskeyAuthenticator(),
+      ).authenticate(rememberDevice: true, deviceName: 'My Android');
+      expect(jsonDecode(requests.first.body), {
+        'rememberDevice': true,
+        'deviceName': 'My Android',
+      });
+      expect((jsonDecode(requests.last.body) as Map).keys.toSet(), {
+        'requestId',
+        'credential',
+      });
+      expect(session.durable, isTrue);
+      expect(session.deviceId, 'synthetic-family');
+      expect(session.sessionResponse['refreshToken'], durable['refreshToken']);
+      expect(mail.token, isNull);
+      expect(
+        () => PasskeySession.fromJson({...durable, 'refreshToken': 'bad'}),
+        throwsA(code('INVALID_RESPONSE')),
+      );
+    },
+  );
+
+  test(
     'registration forwards standard options/credential to own server once',
     () async {
       final requests = <http.Request>[];

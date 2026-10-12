@@ -19,6 +19,9 @@ class PasskeyLoginButton extends StatefulWidget {
     this.enabled = true,
     this.contextKey,
     this.onBusyChanged,
+    this.rememberDevice = false,
+    this.deviceName,
+    this.onCancelled,
   }) : assert(api != null || acquireApi != null);
   final MailApi? api;
   final Future<MailApi> Function()? acquireApi;
@@ -26,7 +29,9 @@ class PasskeyLoginButton extends StatefulWidget {
   onAuthenticated;
   final PasskeyAuthenticator? authenticator;
   final bool Function()? isCurrent;
-  final bool enabled;
+  final bool enabled, rememberDevice;
+  final String? deviceName;
+  final VoidCallback? onCancelled;
 
   /// Change when server text, account, or navigation changes.
   final Object? contextKey;
@@ -47,8 +52,11 @@ class _PasskeyLoginButtonState extends State<PasskeyLoginButton> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.api != widget.api ||
         oldWidget.contextKey != widget.contextKey ||
-        oldWidget.authenticator != widget.authenticator) {
+        oldWidget.authenticator != widget.authenticator ||
+        oldWidget.rememberDevice != widget.rememberDevice ||
+        oldWidget.deviceName != widget.deviceName) {
       final wasBusy = _busy;
+      if (wasBusy) widget.onCancelled?.call();
       _invalidate();
       _error = '';
       if (wasBusy) {
@@ -101,8 +109,19 @@ class _PasskeyLoginButtonState extends State<PasskeyLoginButton> {
       _flow = flow;
       final result = await flow.authenticate(
         isCurrent: () => _current(generation),
+        rememberDevice: widget.rememberDevice,
+        deviceName: widget.deviceName,
       );
-      if (!_current(generation)) return;
+      if (!_current(generation)) {
+        if (result.refreshToken != null) {
+          unawaited(
+            api
+                .revokeDeviceSession(result.refreshToken!)
+                .catchError((Object _) {}),
+          );
+        }
+        return;
+      }
       await widget.onAuthenticated(api, result);
     } catch (error) {
       if (_current(generation)) {
@@ -119,6 +138,7 @@ class _PasskeyLoginButtonState extends State<PasskeyLoginButton> {
   }
 
   void _cancel() {
+    widget.onCancelled?.call();
     _invalidate();
     setState(() => _error = '已取消通行密钥登录。');
     widget.onBusyChanged?.call(false);

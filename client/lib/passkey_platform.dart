@@ -87,21 +87,33 @@ class PasskeyFlow {
   bool _busy = false, _disposed = false;
   bool get busy => _busy;
 
-  Future<PasskeySession> authenticate({bool Function()? isCurrent}) async {
-    final token = api.mailApi.token;
-    return _perform(
-      (check) async {
-        final options = await api.authenticationOptions();
+  Future<PasskeySession> authenticate({
+    bool Function()? isCurrent,
+    bool rememberDevice = false,
+    String? deviceName,
+  }) async {
+    final sessionCurrent = api.mailApi.captureSessionGuard();
+    return _perform((check) async {
+      final options = await api.authenticationOptions(
+        rememberDevice: rememberDevice,
+        deviceName: deviceName,
+      );
+      check();
+      final credential = await authenticator.authenticate(options.publicKey);
+      check();
+      final result = await api.verifyAuthentication(options, credential);
+      try {
         check();
-        final credential = await authenticator.authenticate(options.publicKey);
-        check();
-        final result = await api.verifyAuthentication(options, credential);
-        check();
-        return result;
-      },
-      isCurrent: () =>
-          api.mailApi.token == token && (isCurrent?.call() ?? true),
-    );
+      } catch (_) {
+        if (result.refreshToken != null) {
+          try {
+            await api.mailApi.revokeDeviceSession(result.refreshToken!);
+          } catch (_) {}
+        }
+        rethrow;
+      }
+      return result;
+    }, isCurrent: () => sessionCurrent() && (isCurrent?.call() ?? true));
   }
 
   Future<PasskeyEntry> register({
@@ -110,30 +122,27 @@ class PasskeyFlow {
     bool Function()? isCurrent,
   }) async {
     final token = api.mailApi.token;
+    final sessionCurrent = api.mailApi.captureSessionGuard();
     if (token == null || token.isEmpty) {
       throw ApiException('UNAUTHORIZED', '请重新登录');
     }
-    return _perform(
-      (check) async {
-        final options = await api.registrationOptions(
-          password: password,
-          name: name,
-          bearer: token,
-        );
-        check();
-        final credential = await authenticator.register(options.publicKey);
-        check();
-        final result = await api.verifyRegistration(
-          options,
-          credential,
-          bearer: token,
-        );
-        check();
-        return result;
-      },
-      isCurrent: () =>
-          api.mailApi.token == token && (isCurrent?.call() ?? true),
-    );
+    return _perform((check) async {
+      final options = await api.registrationOptions(
+        password: password,
+        name: name,
+        bearer: token,
+      );
+      check();
+      final credential = await authenticator.register(options.publicKey);
+      check();
+      final result = await api.verifyRegistration(
+        options,
+        credential,
+        bearer: token,
+      );
+      check();
+      return result;
+    }, isCurrent: () => sessionCurrent() && (isCurrent?.call() ?? true));
   }
 
   Future<T> _perform<T>(

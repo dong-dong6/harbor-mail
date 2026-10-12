@@ -49,6 +49,7 @@ jobs:
       - name: Test native session and installer policies with synthetic fixtures
         run: |
           bash client/android/tests/run-session-vault-tests.sh
+          bash client/android/tests/run-device-session-vault-tests.sh
           bash client/android/tests/run-policy-tests.sh
           python3 scripts/test-prepare-android-download.py
       - name: Build this checkout using the runner's preinstalled Android SDK

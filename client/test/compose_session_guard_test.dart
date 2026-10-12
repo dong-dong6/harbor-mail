@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harbor_mail/api.dart';
 import 'package:harbor_mail/compose_editor.dart';
+import 'durable_guard_fixture.dart';
 
 class ControlledPicker extends FilePicker {
   Completer<FilePickerResult?>? _picked;
@@ -26,8 +27,7 @@ class ControlledPicker extends FilePicker {
     bool withReadStream = false,
     bool lockParentWindow = false,
     bool readSequential = false,
-  }) =>
-      picked.future;
+  }) => picked.future;
 }
 
 class ControlledApi extends MailApi {
@@ -158,6 +158,39 @@ void main() {
     FilePicker.platform = picker;
   });
 
+  testWidgets(
+    'durable access rotation preserves an admitted attachment upload',
+    (tester) async {
+      final api = ControlledApi()..deviceSession = DurableGuardFixture();
+      final key = await mountEditor(tester, api, SessionEpoch());
+      final upload = key.currentState!.upload();
+      await tester.pump();
+      api.token = 'synthetic-rotated-access';
+      picker.picked.complete(syntheticFile());
+      await tester.pumpAndSettle();
+      await upload;
+      expect(api.calls, ['POST /drafts', 'UPLOAD draft', 'GET /drafts']);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('durable family epoch change still rejects an admitted upload', (
+    tester,
+  ) async {
+    final identity = DurableGuardFixture();
+    final api = ControlledApi()..deviceSession = identity;
+    final key = await mountEditor(tester, api, SessionEpoch());
+    final upload = key.currentState!.upload();
+    await tester.pump();
+    identity.epoch++;
+    api.token = 'synthetic-rotated-access';
+    picker.picked.complete(syntheticFile());
+    await tester.pumpAndSettle();
+    await upload;
+    expect(api.calls, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
   for (final invalidation in [
     'logout',
     'replacement',
@@ -195,19 +228,21 @@ void main() {
     });
   }
 
-  testWidgets('file stream cannot persist after lock and unlock',
-      (tester) async {
+  testWidgets('file stream cannot persist after lock and unlock', (
+    tester,
+  ) async {
     final api = ControlledApi();
     final session = SessionEpoch();
     final key = await mountEditor(tester, api, session);
     await tester.runAsync(() async {
-      final bytes = Stream<List<int>>.fromIterable([
-        [1, 2, 3]
-      ]).map((chunk) {
-        session.lock();
-        session.unlock();
-        return chunk;
-      });
+      final bytes =
+          Stream<List<int>>.fromIterable([
+            [1, 2, 3],
+          ]).map((chunk) {
+            session.lock();
+            session.unlock();
+            return chunk;
+          });
       final upload = key.currentState!.upload();
       picker.picked.complete(syntheticFile(stream: bytes));
       await upload;

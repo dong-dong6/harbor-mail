@@ -246,7 +246,7 @@ class DevicePairingApiTest {
     assertEquals(204, call("DELETE", "/auth/devices/" + Store.id(), null, browser).statusCode());
   }
 
-  @Test void deviceExpiryAndLogoutRemoveDeviceAccessWithoutARefreshRoute() throws Exception {
+  @Test void legacyDeviceExpiryAndLogoutCannotBeUpgradedToRefresh() throws Exception {
     var first = enroll(create()); String token = (String) first.get("accessToken");
     store.db.update("UPDATE paired_device SET expires_at=? WHERE id=?", System.currentTimeMillis() - 1, first.get("deviceId"));
     assertEquals(401, call("GET", "/accounts", null, token).statusCode());
@@ -254,7 +254,7 @@ class DevicePairingApiTest {
     assertEquals(204, call("POST", "/auth/logout", Json.map(), secondToken).statusCode());
     assertEquals(401, call("GET", "/accounts", null, secondToken).statusCode());
     assertEquals(true, store.one("SELECT revoked FROM paired_device WHERE id=?", second.get("deviceId")).get("revoked"));
-    assertEquals(401, call("POST", "/auth/refresh", Json.map(), null).statusCode());
+    assertEquals(400, call("POST", "/auth/refresh", Json.map(), null).statusCode());
   }
 
   @Test void concurrentClaimsChooseOneChallengeAndConcurrentRedeemsIssueOneToken() throws Exception {

@@ -7,7 +7,7 @@ import java.time.Instant;
 import java.util.*;
 import org.springframework.stereotype.Component;
 
-/** Short-lived, single-use owner approval. No provider credentials, refresh tokens or passkeys. */
+/** Short-lived, single-use owner approval. Durable device sessions require explicit approval. */
 @Component
 public class DevicePairingService {
   static final long PAIRING_LIFETIME = 120_000, DEVICE_LIFETIME = 8 * 3600_000L;
@@ -129,7 +129,7 @@ public class DevicePairingService {
   }
 
   void cleanup(long now) {
-    store.db.update("DELETE FROM access_token WHERE expires_at<=?", now);
+    store.db.update("DELETE FROM access_token WHERE expires_at<=? AND token_hash NOT IN (SELECT token_hash FROM device_session_access)", now);
     store.db.update("UPDATE device_pairing SET state='EXPIRED',secret_hash=NULL WHERE state IN ('CREATED','CLAIMED','APPROVED') "
         + "AND (expires_at<=? OR NOT EXISTS (SELECT 1 FROM access_token a WHERE a.token_hash=device_pairing.creator_hash AND a.expires_at>?))", now, now);
     store.db.update("DELETE FROM device_pairing WHERE expires_at<?", now - 600_000);
@@ -228,7 +228,9 @@ public class DevicePairingService {
   }
 
   Map<String, Object> approve(String creator, String id, Map<String, Object> body, String ip) {
-    fields(body, "password", "confirmationCode");
+    if (body.containsKey("rememberDevice")) fields(body, "password", "confirmationCode", "rememberDevice");
+    else fields(body, "password", "confirmationCode");
+    boolean remember = DeviceSessionService.remember(body);
     String password = text(body, "password", 72), confirmation = text(body, "confirmationCode", 6);
     if (!confirmation.matches("[0-9]{6}")) throw ApiError.bad("Invalid confirmationCode");
     // Verify outside the database lock; login shares the same bounded password-attempt budget.
@@ -245,7 +247,8 @@ public class DevicePairingService {
       requireState(row, "CLAIMED");
       if (!equal(confirmation, (String) row.get("confirmation_code")))
         throw new ApiError(400, "CONFIRMATION_MISMATCH", "Confirmation codes do not match");
-      store.db.update("UPDATE device_pairing SET state='APPROVED' WHERE id=?", id);
+      store.db.update("UPDATE device_pairing SET state='APPROVED',remember_device=? WHERE id=?", remember, id);
+      row.put("remember_device", remember);
       row.put("state", "APPROVED");
       return state(row);
     });
@@ -275,6 +278,11 @@ public class DevicePairingService {
           Integer.class, now) >= MAX_DEVICES
           || store.db.queryForObject("SELECT COUNT(*) FROM paired_device", Integer.class) >= 1000)
         throw new ApiError(429, "DEVICE_LIMIT", "Too many devices; revoke an unused device or wait for expiry");
+      if (Boolean.TRUE.equals(row.get("remember_device"))) {
+        var session = security.deviceSessions.issue((String) row.get("device_name"));
+        store.db.update("UPDATE device_pairing SET state='REDEEMED',secret_hash=NULL WHERE id=?", row.get("id"));
+        return session;
+      }
       String deviceId = Store.id(), token = security.token();
       store.db.update("INSERT INTO paired_device(id,name,created_at,expires_at,last_seen_at,revoked) VALUES(?,?,?,?,?,FALSE)",
           deviceId, row.get("device_name"), now, expires, now);
@@ -296,6 +304,7 @@ public class DevicePairingService {
   void revoke(String deviceId) {
     id(deviceId);
     store.write(() -> {
+      security.deviceSessions.revokeDevice(deviceId);
       store.db.update("UPDATE paired_device SET revoked=TRUE WHERE id=?", deviceId);
       store.db.update("DELETE FROM access_token WHERE token_hash IN (SELECT token_hash FROM device_access_token WHERE device_id=?)", deviceId);
       return null;
@@ -304,7 +313,8 @@ public class DevicePairingService {
 
   Map<String, Object> state(Map<String, Object> row) {
     var result = Json.map("pairingId", row.get("id"), "state", row.get("state"),
-        "expiresAt", iso(number(row, "expires_at")), "accountName", accountName(), "permission", PERMISSION);
+        "expiresAt", iso(number(row, "expires_at")), "accountName", accountName(), "permission", PERMISSION,
+        "rememberDevice", Boolean.TRUE.equals(row.get("remember_device")));
     if (row.get("device_name") != null) result.put("deviceName", row.get("device_name"));
     if (row.get("confirmation_code") != null) result.put("confirmationCode", row.get("confirmation_code"));
     return result;

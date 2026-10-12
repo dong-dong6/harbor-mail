@@ -9,16 +9,33 @@ import 'api.dart';
 
 typedef Json = Map<String, dynamic>;
 const muted = Color(0xff7c899c);
+
+class ExternalPickerResult<T> {
+  const ExternalPickerResult(this.value, {this.reauthorize = false});
+  final T value;
+  final bool reauthorize;
+}
+
+typedef RunExternalPicker =
+    Future<ExternalPickerResult<T>> Function<T>(Future<T> Function() picker);
+
 const _sendUncertainMessage = '提交结果暂不确定。请通过下方按钮查看发件状态，不要重复发送。';
 
 // A guard belongs to one action. A lock/unlock or logout invalidates it even
 // when this editor remains mounted and the bearer later appears unchanged.
 class _ComposeSession {
   final MailApi api;
-  final String? bearer;
-  final bool Function()? current;
+  bool Function() apiCurrent;
+  bool Function()? current;
 
-  _ComposeSession(this.api, this.current) : bearer = api.token;
+  _ComposeSession(this.api, this.current)
+    : apiCurrent = api.captureSessionGuard();
+
+  void adoptAuthorizedContinuation(_ComposeSession fresh) {
+    if (!identical(api, fresh.api)) throw _ComposeSessionChanged();
+    apiCurrent = fresh.apiCurrent;
+    current = fresh.current;
+  }
 }
 
 class _ComposeSessionChanged implements Exception {}
@@ -35,6 +52,7 @@ class ComposeEditor extends StatefulWidget {
   final void Function(String) onSaved;
   final VoidCallback? onViewStatus;
   final bool Function() Function()? captureSessionGuard;
+  final RunExternalPicker? runExternalPicker;
   const ComposeEditor({
     super.key,
     required this.api,
@@ -49,6 +67,7 @@ class ComposeEditor extends StatefulWidget {
     required this.onSaved,
     this.onViewStatus,
     this.captureSessionGuard,
+    this.runExternalPicker,
   });
   @override
   ComposeEditorState createState() => ComposeEditorState();
@@ -86,7 +105,7 @@ class ComposeEditorState extends State<ComposeEditor> {
   bool _isCurrentSession(_ComposeSession session) =>
       mounted &&
       identical(widget.api, session.api) &&
-      session.api.token == session.bearer &&
+      session.apiCurrent() &&
       (session.current?.call() ?? true);
 
   void _requireCurrentSession(_ComposeSession session) {
@@ -100,7 +119,8 @@ class ComposeEditorState extends State<ComposeEditor> {
   void initState() {
     super.initState();
     final d = widget.draft, r = widget.reply;
-    account = d?['accountId'] ??
+    account =
+        d?['accountId'] ??
         r?['accountId'] ??
         (widget.accounts.any((a) => a['id'] == widget.initialAccountId)
             ? widget.initialAccountId
@@ -125,14 +145,15 @@ class ComposeEditorState extends State<ComposeEditor> {
       to.text = widget.forward
           ? ''
           : fromOwnAccount
-              ? (r['to'] as List? ?? []).map((e) => e['address']).join(', ')
-              : r['fromAddress'] ?? '';
+          ? (r['to'] as List? ?? []).map((e) => e['address']).join(', ')
+          : r['fromAddress'] ?? '';
       subject.text = '${widget.forward ? 'Fwd' : 'Re'}: ${r['subject'] ?? ''}';
       quotedText =
           '\n\n──────── 原邮件 ────────\n发件人：${r['fromAddress']}\n主题：${r['subject']}\n\n${r['bodyText'] ?? ''}';
     }
-    savedSnapshot =
-        d == null ? jsonEncode([account, '', '', '', '']) : snapshot;
+    savedSnapshot = d == null
+        ? jsonEncode([account, '', '', '', ''])
+        : snapshot;
   }
 
   @override
@@ -197,52 +218,61 @@ class ComposeEditorState extends State<ComposeEditor> {
   }
 
   Future<void> save() => _act((session) async {
-        await _persist(session);
-        _requireCurrentSession(session);
-        widget.onSaved('草稿已保存');
-      });
+    await _persist(session);
+    _requireCurrentSession(session);
+    widget.onSaved('草稿已保存');
+  });
   Future<void> upload() => _act((session) async {
-        final picked = await FilePicker.platform.pickFiles(
-          withData: false,
-          withReadStream: true,
-        );
+    Future<FilePickerResult?> pick() =>
+        FilePicker.platform.pickFiles(withData: false, withReadStream: true);
+    final runner = widget.runExternalPicker;
+    final result = runner == null
+        ? ExternalPickerResult(await pick())
+        : await runner<FilePickerResult?>(pick);
+    if (result.reauthorize) {
+      // Only the owner's exact-family foreground runner can authorize this
+      // selected file after an OS picker lifecycle interruption.
+      session.adoptAuthorizedContinuation(_captureSession());
+    }
+    _requireCurrentSession(session);
+    final picked = result.value;
+    if (picked == null) return;
+    final file = picked.files.single;
+    if (file.size > widget.maxBytes) {
+      throw ApiException(
+        'FILE_TOO_LARGE',
+        '附件超过 ${widget.maxBytes ~/ 1048576} MiB 上限',
+      );
+    }
+    var bytes = file.bytes;
+    if (bytes == null) {
+      final stream = file.readStream;
+      if (stream == null) {
+        throw ApiException('FILE_UNAVAILABLE', '无法读取文件');
+      }
+      final buffer = BytesBuilder(copy: false);
+      await for (final chunk in stream) {
         _requireCurrentSession(session);
-        if (picked == null) return;
-        final file = picked.files.single;
-        if (file.size > widget.maxBytes) {
-          throw ApiException(
-            'FILE_TOO_LARGE',
-            '附件超过 ${widget.maxBytes ~/ 1048576} MiB 上限',
-          );
+        if (buffer.length + chunk.length > widget.maxBytes) {
+          throw ApiException('FILE_TOO_LARGE', '附件超过上传上限');
         }
-        var bytes = file.bytes;
-        if (bytes == null) {
-          final stream = file.readStream;
-          if (stream == null) {
-            throw ApiException('FILE_UNAVAILABLE', '无法读取文件');
-          }
-          final buffer = BytesBuilder(copy: false);
-          await for (final chunk in stream) {
-            _requireCurrentSession(session);
-            if (buffer.length + chunk.length > widget.maxBytes) {
-              throw ApiException('FILE_TOO_LARGE', '附件超过上传上限');
-            }
-            buffer.add(chunk);
-          }
-          _requireCurrentSession(session);
-          bytes = buffer.takeBytes();
-        }
-        await _persist(session);
-        _requireCurrentSession(session);
-        await session.api.upload(id!, file.name, bytes);
-        _requireCurrentSession(session);
-        final data = await session.api.request('GET', '/drafts');
-        _requireCurrentSession(session);
-        final updated =
-            (data['items'] as List).where((d) => d['id'] == id).firstOrNull;
-        if (updated != null) revision = updated['revision'];
-        setState(() => attachments.add(file.name));
-      });
+        buffer.add(chunk);
+      }
+      _requireCurrentSession(session);
+      bytes = buffer.takeBytes();
+    }
+    await _persist(session);
+    _requireCurrentSession(session);
+    await session.api.upload(id!, file.name, bytes);
+    _requireCurrentSession(session);
+    final data = await session.api.request('GET', '/drafts');
+    _requireCurrentSession(session);
+    final updated = (data['items'] as List)
+        .where((d) => d['id'] == id)
+        .firstOrNull;
+    if (updated != null) revision = updated['revision'];
+    setState(() => attachments.add(file.name));
+  });
   Future<bool> canLeave() async {
     if (locked) return false;
     if (!dirty) return true;
@@ -364,206 +394,201 @@ class ComposeEditorState extends State<ComposeEditor> {
   }
 
   Widget fields() => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          DropdownButtonFormField<String>(
-            initialValue: account,
-            isExpanded: true,
-            decoration: const InputDecoration(labelText: '发件邮箱'),
-            items: widget.accounts
-                .map(
-                  (a) => DropdownMenuItem<String>(
-                    value: a['id'],
-                    child:
-                        Text(a['email'] ?? '', overflow: TextOverflow.ellipsis),
-                  ),
-                )
-                .toList(),
-            onChanged: locked || id != null
-                ? null
-                : (v) => setState(() => account = v!),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: to,
-            enabled: !locked,
-            decoration: const InputDecoration(
-              labelText: '收件人',
-              hintText: 'name@example.com',
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: cc,
-            enabled: !locked,
-            decoration: const InputDecoration(labelText: '抄送（可选）'),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: subject,
-            enabled: !locked,
-            decoration: const InputDecoration(labelText: '主题'),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            key: widget.inline ? const Key('inline-body') : null,
-            controller: body,
-            enabled: !locked,
-            minLines: widget.inline ? 5 : 9,
-            maxLines: 14,
-            decoration: InputDecoration(
-              labelText: widget.inline ? '回复正文' : null,
-              hintText: '从这里开始…',
-              alignLabelWithHint: true,
-            ),
-          ),
-          if (quotedText.isNotEmpty) ...[
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                key: const Key('toggle-quoted-message'),
-                onPressed: () => setState(() => quoteExpanded = !quoteExpanded),
-                icon:
-                    Icon(quoteExpanded ? Icons.expand_less : Icons.more_horiz),
-                label: Text(quoteExpanded ? '收起原邮件' : '显示原邮件'),
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      DropdownButtonFormField<String>(
+        initialValue: account,
+        isExpanded: true,
+        decoration: const InputDecoration(labelText: '发件邮箱'),
+        items: widget.accounts
+            .map(
+              (a) => DropdownMenuItem<String>(
+                value: a['id'],
+                child: Text(a['email'] ?? '', overflow: TextOverflow.ellipsis),
               ),
-            ),
-            if (quoteExpanded)
-              SelectableText(
-                quotedText,
-                style: const TextStyle(fontSize: 12, color: muted),
-              ),
-          ],
-          if (attachments.isNotEmpty)
-            Wrap(
-              spacing: 8,
-              children: attachments
-                  .map(
-                    (name) => Chip(
-                      avatar: const Icon(Icons.attach_file, size: 16),
-                      label: Text(name),
-                    ),
-                  )
-                  .toList(),
-            ),
-        ],
-      );
+            )
+            .toList(),
+        onChanged: locked || id != null
+            ? null
+            : (v) => setState(() => account = v!),
+      ),
+      const SizedBox(height: 12),
+      TextField(
+        controller: to,
+        enabled: !locked,
+        decoration: const InputDecoration(
+          labelText: '收件人',
+          hintText: 'name@example.com',
+        ),
+      ),
+      const SizedBox(height: 12),
+      TextField(
+        controller: cc,
+        enabled: !locked,
+        decoration: const InputDecoration(labelText: '抄送（可选）'),
+      ),
+      const SizedBox(height: 12),
+      TextField(
+        controller: subject,
+        enabled: !locked,
+        decoration: const InputDecoration(labelText: '主题'),
+      ),
+      const SizedBox(height: 12),
+      TextField(
+        key: widget.inline ? const Key('inline-body') : null,
+        controller: body,
+        enabled: !locked,
+        minLines: widget.inline ? 5 : 9,
+        maxLines: 14,
+        decoration: InputDecoration(
+          labelText: widget.inline ? '回复正文' : null,
+          hintText: '从这里开始…',
+          alignLabelWithHint: true,
+        ),
+      ),
+      if (quotedText.isNotEmpty) ...[
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            key: const Key('toggle-quoted-message'),
+            onPressed: () => setState(() => quoteExpanded = !quoteExpanded),
+            icon: Icon(quoteExpanded ? Icons.expand_less : Icons.more_horiz),
+            label: Text(quoteExpanded ? '收起原邮件' : '显示原邮件'),
+          ),
+        ),
+        if (quoteExpanded)
+          SelectableText(
+            quotedText,
+            style: const TextStyle(fontSize: 12, color: muted),
+          ),
+      ],
+      if (attachments.isNotEmpty)
+        Wrap(
+          spacing: 8,
+          children: attachments
+              .map(
+                (name) => Chip(
+                  avatar: const Icon(Icons.attach_file, size: 16),
+                  label: Text(name),
+                ),
+              )
+              .toList(),
+        ),
+    ],
+  );
 
   Widget editor() => Padding(
-        padding:
-            EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 12 : 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+    padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 600 ? 12 : 24),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    widget.inline
-                        ? (widget.forward ? '转发邮件' : '回复邮件')
-                        : '写一封邮件',
-                    style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  tooltip: widget.inline ? '关闭编辑' : '关闭写信窗口',
-                  onPressed: locked ? null : requestClose,
-                  icon: const Icon(Icons.close),
-                ),
-              ],
-            ),
-            const SizedBox(height: 18),
-            if (widget.inline)
-              fields()
-            else
-              Flexible(child: SingleChildScrollView(child: fields())),
-            if (error.isNotEmpty || (sendUncertain && !busy))
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Text(
-                  error.isNotEmpty ? error : _sendUncertainMessage,
-                  style: const TextStyle(color: Colors.red, fontSize: 12),
+            Expanded(
+              child: Text(
+                widget.inline ? (widget.forward ? '转发邮件' : '回复邮件') : '写一封邮件',
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-            if (sendUncertain)
-              TextButton.icon(
-                onPressed: busy ? null : viewUncertainStatus,
-                icon: const Icon(Icons.outbox_outlined),
-                label: const Text('关闭并查看发件状态'),
-              ),
-            const SizedBox(height: 20),
-            Wrap(
-              spacing: 10,
-              runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                FilledButton.icon(
-                  onPressed: locked ? null : send,
-                  icon: const Icon(Icons.send_outlined, size: 17),
-                  label: Text(busy ? '处理中…' : '发送'),
-                ),
-                TextButton.icon(
-                  onPressed: locked ? null : save,
-                  icon: const Icon(Icons.save_outlined, size: 17),
-                  label: const Text('保存草稿'),
-                ),
-                TextButton.icon(
-                  onPressed: locked ? null : upload,
-                  icon: const Icon(Icons.attach_file, size: 17),
-                  label: Text('附件 ≤ ${widget.maxBytes ~/ 1048576} MiB'),
-                ),
-              ],
             ),
-            const SizedBox(height: 8),
-            const Text(
-              '草稿需手动保存 · 仅支持纯文本正文',
-              style: TextStyle(fontSize: 10, color: muted),
+            IconButton(
+              tooltip: widget.inline ? '关闭编辑' : '关闭写信窗口',
+              onPressed: locked ? null : requestClose,
+              icon: const Icon(Icons.close),
             ),
           ],
         ),
-      );
+        const SizedBox(height: 18),
+        if (widget.inline)
+          fields()
+        else
+          Flexible(child: SingleChildScrollView(child: fields())),
+        if (error.isNotEmpty || (sendUncertain && !busy))
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text(
+              error.isNotEmpty ? error : _sendUncertainMessage,
+              style: const TextStyle(color: Colors.red, fontSize: 12),
+            ),
+          ),
+        if (sendUncertain)
+          TextButton.icon(
+            onPressed: busy ? null : viewUncertainStatus,
+            icon: const Icon(Icons.outbox_outlined),
+            label: const Text('关闭并查看发件状态'),
+          ),
+        const SizedBox(height: 20),
+        Wrap(
+          spacing: 10,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            FilledButton.icon(
+              onPressed: locked ? null : send,
+              icon: const Icon(Icons.send_outlined, size: 17),
+              label: Text(busy ? '处理中…' : '发送'),
+            ),
+            TextButton.icon(
+              onPressed: locked ? null : save,
+              icon: const Icon(Icons.save_outlined, size: 17),
+              label: const Text('保存草稿'),
+            ),
+            TextButton.icon(
+              onPressed: locked ? null : upload,
+              icon: const Icon(Icons.attach_file, size: 17),
+              label: Text('附件 ≤ ${widget.maxBytes ~/ 1048576} MiB'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          '草稿需手动保存 · 仅支持纯文本正文',
+          style: TextStyle(fontSize: 10, color: muted),
+        ),
+      ],
+    ),
+  );
 
   @override
   Widget build(BuildContext context) => PopScope(
-        canPop: false,
-        onPopInvokedWithResult: (didPop, result) {
-          if (!didPop) requestClose();
-        },
-        child: CallbackShortcuts(
-          bindings: {
-            const SingleActivator(LogicalKeyboardKey.escape): requestClose,
-          },
-          child: Focus(
-            focusNode: editorFocus,
-            autofocus: true,
-            child: widget.inline
-                ? Container(
-                    key: const Key('inline-compose'),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: const Color(0xffd8e0eb)),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: editor(),
-                  )
-                : Dialog(
-                    insetPadding: EdgeInsets.all(
-                      MediaQuery.sizeOf(context).width < 600 ? 8 : 20,
-                    ),
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(
-                        maxWidth: 780,
-                        maxHeight: 760,
-                      ),
-                      child: editor(),
-                    ),
+    canPop: false,
+    onPopInvokedWithResult: (didPop, result) {
+      if (!didPop) requestClose();
+    },
+    child: CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): requestClose,
+      },
+      child: Focus(
+        focusNode: editorFocus,
+        autofocus: true,
+        child: widget.inline
+            ? Container(
+                key: const Key('inline-compose'),
+                decoration: BoxDecoration(
+                  border: Border.all(color: const Color(0xffd8e0eb)),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: editor(),
+              )
+            : Dialog(
+                insetPadding: EdgeInsets.all(
+                  MediaQuery.sizeOf(context).width < 600 ? 8 : 20,
+                ),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxWidth: 780,
+                    maxHeight: 760,
                   ),
-          ),
-        ),
-      );
+                  child: editor(),
+                ),
+              ),
+      ),
+    ),
+  );
 }
 
 /// Backwards-compatible modal used only for new messages and saved drafts.
@@ -580,5 +605,6 @@ class ComposeDialog extends ComposeEditor {
     required super.onSaved,
     super.onViewStatus,
     super.captureSessionGuard,
+    super.runExternalPicker,
   });
 }
