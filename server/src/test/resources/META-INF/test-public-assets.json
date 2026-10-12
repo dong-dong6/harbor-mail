@@ -1,0 +1,14 @@
+{
+  "/cache-fixture/app.js": {
+    "etag": "\"ac76aa1ba87b77e59398a0489fab05d9fd856fa6b026fc147df42e638e86d7fc\"",
+    "length": 10000,
+    "contentType": "application/javascript; charset=utf-8",
+    "gzipEtag": "\"ad92f9dcc799213dfc9eb67ae619d9a590042a39084c224624eafa5495581dde\"",
+    "gzipLength": 115
+  },
+  "/cache-fixture/bootstrap.html": {
+    "etag": "\"5cba884bf2fe92b1a49ea0e0b1f85d5bb7a89d85c4112e7790d4905eecb2ac0b\"",
+    "length": 30,
+    "contentType": "text/html; charset=utf-8"
+  }
+}
