@@ -1,5 +1,5 @@
 // Built Flutter app + real History API + native HTML iframe. Synthetic data only.
-const {chromium}=require('playwright');
+const {chromium,selectors}=require('playwright');
 const {createServer}=require('node:http');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'../build/web'),out=path.resolve(__dirname,'../../test-results/mail-routes');fs.mkdirSync(out,{recursive:true});
@@ -25,12 +25,17 @@ const server=createServer((req,res)=>{
  try{res.end(fs.readFileSync(file));}catch{res.statusCode=404;res.end();}
 });
 (async()=>{
+ // Flutter SelectableText exposes semantics values/labels, not necessarily DOM
+ // text. Match the actual accessible payload exactly, without visual OCR or
+ // accepting unrelated ancestor text. Bounds still come from the matched node.
+ await selectors.register('semanticValue', require('./semantic_value_selector.cjs'));
  await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`;
  const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
  try{
   for(const width of [1440,390]){
-   const page=await browser.newPage({viewport:{width,height:1100}});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+   const page=await browser.newPage({viewport:{width,height:1100}});const errors=[],consoleLog=[],network=[];page.on('pageerror',e=>errors.push(String(e)));page.on('console',m=>consoleLog.push({type:m.type(),text:m.text()}));page.on('response',r=>network.push({url:r.url(),status:r.status()}));page.on('requestfailed',r=>network.push({url:r.url(),failure:r.failure()}));
    await page.route('**/*',r=>r.request().url().startsWith(base)||r.request().url().startsWith('data:')?r.continue():r.abort());
+   const semantic=(text,prefix=false)=>page.locator('semanticValue='+JSON.stringify({text,prefix}));
    const hash=route=>page.waitForFunction(value=>location.hash===value,'#'+route);
    const login=async()=>{const placeholder=page.locator('flt-semantics-placeholder');await Promise.race([placeholder.waitFor({state:'attached'}),page.getByRole('textbox').first().waitFor({state:'visible'})]);await page.evaluate(()=>document.querySelector('flt-semantics-placeholder')?.click());await page.getByRole('textbox').first().waitFor({state:'visible'});await page.getByRole('textbox').first().fill('owner');await page.getByRole('textbox').nth(1).fill('synthetic-only');await page.getByRole('button',{name:'登录',exact:true}).click();};
    const back=()=>page.evaluate(()=>history.back()),forward=()=>page.evaluate(()=>history.forward());
@@ -38,13 +43,13 @@ const server=createServer((req,res)=>{
    try {
    console.log(`CHECK ${width}: copied link and header`);
    await page.goto(base+'/#/mail/m2');await login();await hash('/mail/m2');
-   await page.getByText('ROUTE SUBJECT TWO',{exact:true}).waitFor();
-   await page.getByText('发件人：Synthetic sender <sender@example.invalid>',{exact:true}).waitFor();
-   await page.getByText('收件人：Synthetic recipient <recipient@example.invalid>',{exact:true}).waitFor();
-   await page.getByText('抄送：Synthetic copy <copy@example.invalid>',{exact:true}).waitFor();
-   await page.getByText(/接收时间：2026-10-11/).waitFor();
+   await semantic('ROUTE SUBJECT TWO').waitFor();
+   await semantic('发件人：Synthetic sender <sender@example.invalid>').waitFor();
+   await semantic('收件人：Synthetic recipient <recipient@example.invalid>').waitFor();
+   await semantic('抄送：Synthetic copy <copy@example.invalid>').waitFor();
+   await semantic('接收时间：2026-10-11 10:42:00',true).waitFor();
    const iframe=page.locator('iframe[title="邮件正文"]');await iframe.waitFor();
-   const subjectBox=await page.getByText('ROUTE SUBJECT TWO',{exact:true}).boundingBox();const bodyBox=await iframe.boundingBox();
+   const subjectBox=await semantic('ROUTE SUBJECT TWO').boundingBox();const bodyBox=await iframe.boundingBox();
    assert(subjectBox.y>=0&&bodyBox.y>subjectBox.y+subjectBox.height,'mail header stays above HTML iframe');
    assert(bodyBox.x>=0&&bodyBox.x+bodyBox.width<=width+1,'iframe respects viewport');
    assert.equal(await iframe.evaluate(e=>e.contentDocument),null,'HTML body stays opaque sandboxed');
@@ -67,7 +72,7 @@ const server=createServer((req,res)=>{
    await page.getByRole('button',{name:'继续编辑',exact:true}).click();assert.equal(await body.inputValue(),'KEEP REPLY THROUGH BROWSER BACK');
    await back();await page.getByRole('button',{name:'放弃更改',exact:true}).click();await hash('/mail');await forward();await hash('/mail/m1');
    console.log(`CHECK ${width}: refresh and resume`);
-   await page.reload();await login();await hash('/mail/m1');await page.getByText('ROUTE SUBJECT ONE',{exact:true}).waitFor();
+   await page.reload();await login();await hash('/mail/m1');await semantic('ROUTE SUBJECT ONE').waitFor();
    assert.deepEqual(await page.evaluate(()=>Object.keys(localStorage).filter(k=>/token|auth|password/i.test(k))),[]);
    if(width===1440){
     await page.getByRole('button',{name:'账户与设置',exact:true}).last().click();await hash('/settings/accounts');
@@ -79,7 +84,13 @@ const server=createServer((req,res)=>{
    }
    await page.evaluate(()=>{location.hash='/mail/missing';});await page.getByText('加载失败，重试',{exact:true}).waitFor();await hash('/mail/missing');
    assert.equal(errors.length,0,errors.join('\n'));
-   } catch(e) { console.error('Route failure URL:',page.url());await page.screenshot({path:path.join(out,`failure-${width}.png`)}).catch(()=>{});throw e; } finally { await page.close(); }
+   } catch(e) { console.error('Route failure URL:',page.url());
+    await page.screenshot({path:path.join(out,`failure-${width}.png`)}).catch(()=>{});
+    fs.writeFileSync(path.join(out,`failure-${width}.html`),await page.content().catch(()=>''));
+    fs.writeFileSync(path.join(out,`failure-${width}-aria.yml`),await page.locator('body').ariaSnapshot().catch(e=>String(e)));
+    const dom=await page.evaluate(()=>{const nodes=[];const collect=root=>{nodes.push(...root.querySelectorAll('flt-semantics,[aria-label],input,textarea,iframe'));for(const el of root.querySelectorAll('*'))if(el.shadowRoot)collect(el.shadowRoot);};collect(document);return nodes.map(el=>({tag:el.tagName,role:el.getAttribute('role'),label:el.getAttribute('aria-label'),value:el.type==='password'?'[redacted]':el.value,text:el.textContent,rect:el.getBoundingClientRect().toJSON(),pointerEvents:getComputedStyle(el).pointerEvents,attributes:Object.fromEntries(Array.from(el.attributes).map(a=>[a.name,a.value]))}));}).catch(e=>String(e));
+    fs.writeFileSync(path.join(out,`failure-${width}-diagnostics.json`),JSON.stringify({url:page.url(),errors,console:consoleLog,network,dom},null,2));
+    throw e; } finally { await page.close(); }
   }
   console.log('PASS built Flutter routing/header/inline at desktop and mobile: deep link login, browser Back/Forward, dirty keep/discard, refresh resume, settings/add, unavailable mail, sandbox and native editable reply');
  }finally{await browser.close();server.close();}

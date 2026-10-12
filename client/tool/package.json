@@ -4,7 +4,7 @@
   "version": "0.2.3",
   "description": "Development-only synthetic OAuth and isolated mail renderer checks",
   "scripts": {
-    "test": "node oauth_bridge_test.cjs && node test_mail_sanitizer.cjs && node mail_navigation_test.cjs",
+    "test": "node oauth_bridge_test.cjs && node test_mail_sanitizer.cjs && node mail_navigation_test.cjs && node semantic_value_selector_test.cjs",
     "test:browser": "node oauth_browser_smoke.cjs && node test_mail_renderer.cjs",
     "test:mail-routes": "node test_mail_routes_browser.cjs",
     "test:mail-header": "node test_mail_routes_browser.cjs"

@@ -1,0 +1,14 @@
+const assert=require('node:assert/strict');
+const {JSDOM}=require('jsdom');
+const selector=require('./semantic_value_selector.cjs')();
+const doc=new JSDOM('<main></main>').window.document;
+const shadow=doc.querySelector('main').attachShadow({mode:'open'});
+shadow.innerHTML='<flt-semantics aria-label="Exact subject"><span>Exact subject</span></flt-semantics><flt-semantics><input></flt-semantics><flt-semantics aria-label="Date 2026 UTC"></flt-semantics>';
+shadow.querySelector('input').value='Readonly value';
+const exact=text=>JSON.stringify({text});
+assert.equal(selector.queryAll(doc,exact('Exact subject')).length,1);
+assert.equal(selector.query(doc,exact('Readonly value')),shadow.querySelector('input'));
+assert.equal(selector.queryAll(doc,exact('subject')).length,0);
+assert.equal(selector.queryAll(doc,JSON.stringify({text:'Date 2026',prefix:true})).length,1);
+assert.equal(selector.query(doc,exact('not present')),null);
+console.log('PASS accessible selector: exact ARIA label, live native value, open shadow DOM, prefix date, no partial/ancestor fallback');

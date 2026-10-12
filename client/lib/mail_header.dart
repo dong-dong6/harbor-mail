@@ -4,13 +4,11 @@ import 'package:flutter/material.dart';
 class MailHeader extends StatelessWidget {
   final Map<String, dynamic> message;
   const MailHeader({super.key, required this.message});
-  String addresses(dynamic values) => (values as List? ?? [])
-      .map((value) {
+  String addresses(dynamic values) => (values as List? ?? []).map((value) {
         final address = value['address']?.toString() ?? '';
         final name = value['name']?.toString().trim() ?? '';
         return name.isEmpty ? address : '$name <$address>';
-      })
-      .join(', ');
+      }).join(', ');
   String get received {
     final raw = message['receivedAt']?.toString() ?? '';
     final date = DateTime.tryParse(raw)?.toLocal();
@@ -24,14 +22,18 @@ class MailHeader extends StatelessWidget {
     final fromName = message['fromName']?.toString().trim() ?? '';
     final fromAddress = message['fromAddress']?.toString() ?? '';
     final cc = addresses(message['cc']);
+    final subject = message['subject']?.toString().isNotEmpty == true
+        ? message['subject'].toString()
+        : '（无主题）';
     return Column(
       key: const Key('mail-header'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SelectableText(
-          message['subject']?.toString().isNotEmpty == true
-              ? message['subject']
-              : '（无主题）',
+          subject,
+          // Expose readonly selectable content as a label rather than an empty
+          // web text-input node; visual selection/copy behavior is unchanged.
+          semanticsLabel: subject,
           style: const TextStyle(
             fontSize: 24,
             fontWeight: FontWeight.w600,
@@ -51,14 +53,15 @@ class MailHeader extends StatelessWidget {
   }
 
   Widget field(String label, String value) => Padding(
-    padding: const EdgeInsets.only(bottom: 7),
-    child: SelectableText(
-      '$label：${value.isEmpty ? '未提供' : value}',
-      style: const TextStyle(
-        fontSize: 12,
-        color: Color(0xff596a81),
-        height: 1.6,
-      ),
-    ),
-  );
+        padding: const EdgeInsets.only(bottom: 7),
+        child: SelectableText(
+          '$label：${value.isEmpty ? '未提供' : value}',
+          semanticsLabel: '$label：${value.isEmpty ? '未提供' : value}',
+          style: const TextStyle(
+            fontSize: 12,
+            color: Color(0xff596a81),
+            height: 1.6,
+          ),
+        ),
+      );
 }

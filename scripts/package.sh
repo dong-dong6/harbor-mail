@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 test -f "$ROOT/dist/mail-client.jar" || { echo 'Run scripts/build.sh first.' >&2; exit 1; }
 python3 - "$ROOT" <<'PY'
-import pathlib,sys,zipfile,hashlib,json,datetime
+import pathlib,sys,zipfile,hashlib,json,datetime,os,xml.etree.ElementTree as ET
 r=pathlib.Path(sys.argv[1])
 import subprocess
 version=subprocess.check_output([sys.executable,str(r/'scripts/check-version.py')],text=True).strip()
@@ -13,6 +13,28 @@ jar=(r/'dist/mail-client.jar').read_bytes()
 build_info=json.loads((r/'docs/BUILD_INFO.json').read_text())
 build_info.update(version=version, jarBytes=len(jar), jarSha256=hashlib.sha256(jar).hexdigest(),
                   packagedAt=datetime.datetime.now(datetime.timezone.utc).isoformat())
+# CI packages only after all required checks. Derive backend totals from this run,
+# never copy a previous local report's counts into the release archive.
+if os.environ.get('GITHUB_ACTIONS') == 'true':
+    def test_summary(directory):
+        reports = sorted(directory.glob('TEST-*.xml'))
+        if not reports:
+            raise SystemExit(f'Missing required CI test reports: {directory}')
+        totals = {key: 0 for key in ('tests', 'failures', 'errors', 'skipped')}
+        for report in reports:
+            suite = ET.parse(report).getroot()
+            for key in totals:
+                totals[key] += int(suite.get(key, '0'))
+        if totals['tests'] == 0 or totals['failures'] or totals['errors'] or totals['skipped']:
+            raise SystemExit(f'Cannot package unsuccessful test evidence: {directory}')
+        return totals
+    build_info['h2'] = test_summary(r/'test-results/h2')
+    build_info['postgresql'] = test_summary(r/'server/target/surefire-reports')
+    build_info['ciSourceCommit'] = os.environ.get('GITHUB_SHA')
+    build_info['ciRunId'] = os.environ.get('GITHUB_RUN_ID')
+    build_info['ciRunAttempt'] = os.environ.get('GITHUB_RUN_ATTEMPT')
+    build_info['ciWorkflow'] = os.environ.get('GITHUB_WORKFLOW')
+
 try:
     build_info['packagedSourceCommit']=subprocess.check_output(
         ['git','rev-parse','HEAD'],cwd=r,text=True,stderr=subprocess.DEVNULL).strip()

@@ -1,27 +1,36 @@
 {
   "version": "0.2.3",
   "sourceBaseCommit": "bf3780fb6b9cb8fbba32e240cacaddb039f85dc7",
-  "publicationState": "reconstructed candidate under fresh verification; not deployed",
+  "publicationState": "v0.2.3 candidate; deploy only exact-commit successful CI artifact",
   "java": "21.0.12.1",
   "flutter": "3.47.5",
   "maven": "3.9.9",
   "postgresql": {
+    "tests": 321,
+    "databaseBackedCases": 135,
+    "databaseIndependentCases": 186,
     "version": "17.11",
-    "total": 305,
-    "databaseBackedCases": 134,
-    "databaseIndependentCases": 171,
     "noH2Fallback": true,
     "failures": 0,
     "errors": 0,
-    "skipped": 0,
-    "scope": "before final decoder/address hardening; exact-commit full rerun pending"
+    "skipped": 0
   },
-  "h2": "focused226 plus hardened fetcher146 passed; final full verification pending",
+  "h2": {
+    "tests": 321,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
   "flutterAnalyze": "passed",
   "flutterTests": 87,
-  "browserEndToEnd": "required exact-commit CI now being launched; local Chromium cannot create runtime socket",
+  "browserEndToEnd": "isolated Chromium OAuth/HTML/image tests passed on candidate CI; full UI harness must pass exact-commit CI before deployment",
   "migrationRollbackCompatibility": "fresh actual bf3780f-source V1-V4 JAR startup/upload/download against V5 passed on H2 and PostgreSQL",
   "realProviderAcceptance": "not_run",
   "productionDeployment": "not_performed",
-  "flutterWebRelease": "passed; bundled local CanvasKit"
+  "flutterWebRelease": "passed; bundled local CanvasKit",
+  "generatedAt": "2026-10-12T06:44:30.937671+00:00",
+  "nodeOAuthProtocolTests": 9,
+  "htmlDomSecurityChecks": "passed; duplicate-render and no-origin-fallback budgets",
+  "nodeHistoryBridge": "passed",
+  "localPackagedHttpSmoke": "passed; standard demo, actual Dart API, account/auth and static cache checks"
 }
