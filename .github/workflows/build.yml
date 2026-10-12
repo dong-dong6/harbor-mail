@@ -2,7 +2,7 @@ name: Build and release
 
 on:
   push:
-    branches: ['**']
+    branches: ['**', '!debug/**']
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -81,6 +81,14 @@ jobs:
           CHROMIUM="$BROWSER_PATH" CHROMIUM_PATH="$BROWSER_PATH" npm run test:browser --prefix client/tool
       - name: Analyze, test (H2), build Web, and package integrated JAR
         run: bash scripts/build.sh
+      - name: Preserve compiled Web for isolated browser diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-browser-debug-${{ github.sha }}
+          path: client/build/web/
+          if-no-files-found: warn
+          retention-days: 3
       - name: Test real Web headers, inline reply input and browser history
         shell: bash
         run: |

@@ -1,0 +1,88 @@
+name: Isolated browser diagnostics
+
+on:
+  push:
+    branches: ['debug/v0.2.3-browser']
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 'Prior diagnostic/build run containing a compiled Web artifact; 0 builds current source'
+        default: '0'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: browser-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+      BOT: 'true'
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
+      DART_SUPPRESS_ANALYTICS: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Select compiled source
+        env:
+          REQUESTED_RUN: ${{ inputs.source_run_id }}
+        run: |
+          SOURCE_RUN="${REQUESTED_RUN:-$(cat client/tool/browser-debug-source-run.txt)}"
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          echo "SOURCE_RUN=$SOURCE_RUN" >> "$GITHUB_ENV"
+          echo "Diagnostic test script commit: $GITHUB_SHA; source run: $SOURCE_RUN"
+      - name: Reuse compiled Web
+        if: env.SOURCE_RUN != '0'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: web-browser-debug-*
+          merge-multiple: true
+          path: client/build/web
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN }}
+      - name: Build current Web when no prior bundle selected
+        if: env.SOURCE_RUN == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.47.5-stable.tar.xz --output "$RUNNER_TEMP/flutter.tar.xz"
+          echo "2132e990f236f8d22e7c6314b29a191a95b10d7cbcfec9b4e2e303d996652cbb  $RUNNER_TEMP/flutter.tar.xz" | sha256sum --check
+          tar -xf "$RUNNER_TEMP/flutter.tar.xz" -C "$RUNNER_TEMP"
+          export PATH="$RUNNER_TEMP/flutter/bin:$PATH"
+          cd client
+          flutter pub get
+          flutter build web --release --no-web-resources-cdn
+          echo "$GITHUB_SHA" > build/web/browser-debug-source-commit.txt
+      - name: Preserve compiled Web
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-browser-debug-${{ github.sha }}
+          path: client/build/web/
+          if-no-files-found: error
+          retention-days: 3
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Test actual browser interaction
+        run: |
+          npm ci --prefix client/tool --ignore-scripts --no-audit --no-fund
+          client/tool/node_modules/.bin/playwright install --with-deps chromium
+          BROWSER_PATH=$(node -e "process.stdout.write(require('./client/tool/node_modules/playwright').chromium.executablePath())")
+          CHROMIUM_PATH="$BROWSER_PATH" npm run test:mail-routes --prefix client/tool
+      - name: Preserve diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-diagnostics-${{ github.sha }}
+          path: test-results/mail-routes/
+          if-no-files-found: warn
+          retention-days: 3
