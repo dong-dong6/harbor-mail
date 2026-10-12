@@ -42,8 +42,13 @@ if os.environ.get('GITHUB_ACTIONS') == 'true':
     apk = json.loads((r/'server/src/main/resources/META-INF/android-download/manifest.json').read_text())
     if apk.get('sourceCommit') != os.environ.get('GITHUB_SHA'):
         raise SystemExit('APK source commit differs from packaged source')
-    build_info['browserEndToEnd'] = 'passed exact-commit CI Web navigation and isolated WebAuthn checks'
+    build_info['browserEndToEnd'] = 'passed exact-commit CI Web navigation, isolated WebAuthn protocol, and actual Flutter passkey UI checks'
     build_info['passkeyBrowser'] = passkeys
+    passkey_ui = json.loads((r/'test-results/passkeys-flutter-browser.json').read_text())
+    if (passkey_ui.get('result') != 'passed' or passkey_ui.get('syntheticOnly') is not True
+            or passkey_ui.get('suite') != 'actual-flutter-web-passkey-ui'):
+        raise SystemExit('Missing successful actual Flutter Web Passkey UI evidence')
+    build_info['passkeyFlutterUi'] = passkey_ui
     build_info['nativeAndroidBuild'] = 'passed exact-commit CI development APK build and integrated HTTP download smoke'
     build_info['androidDownload'] = apk
     build_info['nativeWindowsBuild'] = 'separate required windows-native CI job; hardware authentication not tested'

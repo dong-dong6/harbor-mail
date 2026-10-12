@@ -43,11 +43,20 @@ jobs:
             --output "$RUNNER_TEMP/flutter.tar.xz"
           echo "2132e990f236f8d22e7c6314b29a191a95b10d7cbcfec9b4e2e303d996652cbb  $RUNNER_TEMP/flutter.tar.xz" | sha256sum --check
           tar -xf "$RUNNER_TEMP/flutter.tar.xz" -C "$RUNNER_TEMP"
+          # Discard only this job's downloaded SDK archive before native build/artifact copies.
+          rm -f "$RUNNER_TEMP/flutter.tar.xz"
           echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
       - name: Build this checkout using the runner's preinstalled Android SDK
         # Fails closed if a required SDK component/license is absent; never accepts licenses.
         # Ephemeral default debug signing only. No production keystore or persistent key cache.
         run: bash scripts/build-android-download.sh
+      - name: Report remaining disk and compiled APK size
+        if: always()
+        shell: bash
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+          APK=client/build/app/outputs/flutter-apk/app-debug.apk
+          if [ -f "$APK" ]; then stat -c 'Compiled APK bytes: %s' "$APK"; fi
       - name: Preserve verified development APK and manifest
         uses: actions/upload-artifact@v7
         with:
@@ -208,6 +217,8 @@ jobs:
             --output "$RUNNER_TEMP/flutter.tar.xz"
           echo "2132e990f236f8d22e7c6314b29a191a95b10d7cbcfec9b4e2e303d996652cbb  $RUNNER_TEMP/flutter.tar.xz" | sha256sum --check
           tar -xf "$RUNNER_TEMP/flutter.tar.xz" -C "$RUNNER_TEMP"
+          # Discard only this job's downloaded SDK archive before native build/artifact copies.
+          rm -f "$RUNNER_TEMP/flutter.tar.xz"
           echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
       - name: Check toolchain and release version
         env:
@@ -227,6 +238,7 @@ jobs:
         run: |
           npm ci --prefix client/tool --ignore-scripts --no-audit --no-fund
           npm test --prefix client/tool
+          node client/tool/test_passkeys_flutter_browser_unit.cjs
           client/tool/node_modules/.bin/playwright install --with-deps chromium
           BROWSER_PATH=$(node -e "process.stdout.write(require('./client/tool/node_modules/playwright').chromium.executablePath())")
           CHROMIUM="$BROWSER_PATH" CHROMIUM_PATH="$BROWSER_PATH" npm run test:browser --prefix client/tool
@@ -255,6 +267,11 @@ jobs:
         run: |
           BROWSER_PATH=$(node -e "process.stdout.write(require('./client/tool/node_modules/playwright').chromium.executablePath())")
           CHROMIUM_PATH="$BROWSER_PATH" bash scripts/test-passkeys-browser.sh
+      - name: Verify actual Flutter Web passkey UI and pinned local plugin bridge
+        shell: bash
+        run: |
+          BROWSER_PATH=$(node -e "process.stdout.write(require('./client/tool/node_modules/playwright').chromium.executablePath())")
+          CHROMIUM_PATH="$BROWSER_PATH" bash scripts/test-passkeys-flutter-browser.sh
       - name: Preserve H2 test reports
         if: always()
         run: |
