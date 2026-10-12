@@ -32,7 +32,7 @@ const server=createServer((req,res)=>{
    const page=await browser.newPage({viewport:{width,height:1100}});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
    await page.route('**/*',r=>r.request().url().startsWith(base)||r.request().url().startsWith('data:')?r.continue():r.abort());
    const hash=route=>page.waitForFunction(value=>location.hash===value,'#'+route);
-   const login=async()=>{const placeholder=page.locator('flt-semantics-placeholder');if(await placeholder.count())await placeholder.evaluate(e=>e.click());await page.getByRole('textbox').first().fill('owner');await page.getByRole('textbox').nth(1).fill('synthetic-only');await page.getByRole('button',{name:'登录',exact:true}).click();};
+   const login=async()=>{const placeholder=page.locator('flt-semantics-placeholder');await Promise.race([placeholder.waitFor({state:'attached'}),page.getByRole('textbox').first().waitFor({state:'visible'})]);await page.evaluate(()=>document.querySelector('flt-semantics-placeholder')?.click());await page.getByRole('textbox').first().waitFor({state:'visible'});await page.getByRole('textbox').first().fill('owner');await page.getByRole('textbox').nth(1).fill('synthetic-only');await page.getByRole('button',{name:'登录',exact:true}).click();};
    const back=()=>page.evaluate(()=>history.back()),forward=()=>page.evaluate(()=>history.forward());
    const reveal=async locator=>{for(let n=0;n<12;n++){const box=await locator.boundingBox().catch(()=>null);if(box&&box.y>=0&&box.y+Math.min(box.height,80)<1050)return;await page.mouse.move(width-14,850);await page.mouse.wheel(0,box&&box.y<0?-450:450);await page.waitForTimeout(120);}};
    try {

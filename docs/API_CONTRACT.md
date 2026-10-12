@@ -1,15 +1,17 @@
-# Initial version API contract
+# API contract (v0.2.3)
 
 Base `/api/v1`, JSON UTF-8. This is the implementation baseline; coordinate changes across owners. Single owner, multiple accounts/devices. Server normalizes all remote mail. Never place provider credentials in client responses. Demo uses synthetic local data and NEVER calls providers.
 
 ## Authentication
-- GET `/health`: `{status:"UP",version:"0.1.0",demoMode:true}` public only non-sensitive status
-- POST `/auth/login`: `{username,password}` -> `{accessToken,expiresAt,demoMode}`. Random opaque bearer token, server stores only hash, expiring/revocable. Flutter keeps it in memory for v0.1 (no browser localStorage). Strict password hash, rate limits; production requires environment bootstrap credentials. Demo profile loopback-only and explicit synthetic data banner; documented demo-only credentials permitted, never fallback in production.
+- GET `/health`: `{status:"UP",version:"0.2.3",demoMode:true}` public only non-sensitive status
+- POST `/auth/login`: `{username,password}` -> `{accessToken,expiresAt,demoMode}`. Random opaque bearer token, server stores only hash, expiring/revocable. Flutter keeps it in memory (no browser localStorage). Strict password hash, rate limits; production requires environment bootstrap credentials. Demo profile loopback-only and explicit synthetic data banner; documented demo-only credentials permitted, never fallback in production.
 - POST `/auth/logout`: authenticated revocation ->204
 All subsequent API routes Bearer authentication. API failures `{error:{code,message,requestId}}`; upstream errors cannot expose secrets.
 
 ## Accounts and mail
-- GET `/accounts`: `{items:[{id,provider,email,displayName,status,lastSyncAt,unreadCount,errorCode}]}`
+- GET `/accounts`: `{items:[{id,provider,email,displayName,status,lastSyncAt,unreadCount,errorCode,canDisconnect,disconnectBlockedReason}]}`
+- PATCH `/accounts/{id}`: `{displayName}` only, a nonblank single-line string of at most 100 characters. Returns safe account metadata. Provider/email/credentials and unknown fields are rejected.
+- DELETE `/accounts/{id}`: local-only disconnect ->204. Removes stored Harbor credentials, cached mail, local drafts, unshared attributable uploaded bytes and settled job history. Does not delete provider mail or revoke provider grants. Queued/running work, uncertain sends, reconciliation-required commands and unknown job states return409 `ACCOUNT_BUSY`; the check/delete uses the same database mutation lock as enqueue and claim. Shared references retain bytes; unattributable legacy orphans are not guessed.
 - POST `/accounts/imap`: `{provider:"QQ"|"NETEASE",email,displayName,authorizationCode}` -> public account. Fixed trusted provider hosts, TLS, no arbitrary host/port in v0.1. Encrypt secret at rest; connect via explicit sync.
 - POST `/accounts/{id}/sync`: ->202 `{jobId,status:"QUEUED"}`; merge duplicate jobs
 - GET `/accounts/{id}/folders`: `{items:[{id,name,role,unreadCount}]}`
@@ -18,6 +20,12 @@ All subsequent API routes Bearer authentication. API failures `{error:{code,mess
 - POST `/commands`, header `Idempotency-Key`, body `{type:"SET_READ"|"SET_STAR"|"TRASH"|"ARCHIVE"|"RESTORE",messageId,baseRevision,value?:boolean}` ->202 `{id,status}`
 - GET `/commands/{id}`: `{id,status,errorCode,messageId}`. Demo mutation can finish immediately, real provider failure explicit. No fake provider success.
 - GET `/attachments/{id}/content`: authenticated stream, safe content disposition. No arbitrary URL fetching.
+
+## Opt-in remote images
+
+- GET `/messages/{messageId}/images?accountId=...`: authenticated current-body manifest `{items:[{id,source}]}` of at most32 allowed image URLs. The account and message must still exist and agree.
+- GET `/messages/{messageId}/images/{imageId}?accountId=...`: authenticated, current-manifest-bound verified PNG bytes, `no-store`. No arbitrary URL is accepted from the client. Cached reads and fetched results revalidate account/message/current body. Expired authentication stops further client batches. Failures never cause browser origin fallback.
+- Default reading makes no image-origin request. Explicit opt-in lets the server contact the source, which can still observe a unique tracking URL. See `MAIL_IMAGE_PROXY.md` for network/raster/client budgets.
 
 ## Drafts and sending
 - GET `/drafts`: `{items:[{id,accountId,to,subject,bodyText,revision,updatedAt}]}`

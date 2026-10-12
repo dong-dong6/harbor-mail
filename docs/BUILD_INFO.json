@@ -1,94 +1,27 @@
 {
-  "version": "0.2.2",
-  "generatedAt": "2026-10-11T14:44:18.420941+00:00",
-  "sourceBaseCommit": "0ffea0a83de28086745c25e0c0d6193174459d2e",
-  "sourceBaseTree": "2cd9bbbb4b77032d85bca7e45113db1b4581865a",
+  "version": "0.2.3",
+  "sourceBaseCommit": "bf3780fb6b9cb8fbba32e240cacaddb039f85dc7",
+  "publicationState": "reconstructed candidate under fresh verification; not deployed",
   "java": "21.0.12.1",
-  "springBoot": "4.0.8",
-  "maven": "3.9.9",
   "flutter": "3.47.5",
-  "dart": "3.13.4",
-  "h2": {
-    "suites": [
-      {
-        "suite": "com.itdong.mail.MailApiTest",
-        "tests": 30,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      },
-      {
-        "suite": "com.itdong.mail.OAuthReturnTest",
-        "tests": 3,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      },
-      {
-        "suite": "com.itdong.mail.OAuthSettingsApiTest",
-        "tests": 50,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      },
-      {
-        "suite": "com.itdong.mail.SecurityConfigTest",
-        "tests": 5,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      },
-      {
-        "suite": "com.itdong.mail.provider.ProviderBodyTest",
-        "tests": 10,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      },
-      {
-        "suite": "com.itdong.mail.provider.ProviderHttpTest",
-        "tests": 12,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      },
-      {
-        "suite": "com.itdong.mail.provider.ProviderMailTest",
-        "tests": 9,
-        "failures": 0,
-        "errors": 0,
-        "skipped": 0
-      }
-    ],
-    "total": 119,
+  "maven": "3.9.9",
+  "postgresql": {
+    "version": "17.11",
+    "total": 305,
+    "databaseBackedCases": 134,
+    "databaseIndependentCases": 171,
+    "noH2Fallback": true,
     "failures": 0,
     "errors": 0,
-    "skipped": 0
+    "skipped": 0,
+    "scope": "before final decoder/address hardening; exact-commit full rerun pending"
   },
-  "flutterTests": 51,
+  "h2": "focused226 plus hardened fetcher146 passed; final full verification pending",
   "flutterAnalyze": "passed",
-  "flutterWebRelease": "passed",
-  "nodeOAuthProtocolTests": 9,
-  "htmlDomSecurityChecks": 11,
-  "previewViewports": [
-    1440,
-    390,
-    320,
-    800
-  ],
-  "pythonBlackboxChecks": 10,
-  "servedVersion": "0.2.2+4",
-  "healthVersionSource": "Spring Boot BuildProperties generated from Maven project.version",
-  "healthFrontendSourceVersionConsistency": "passed_0.2.2",
-  "postgresql": "not_run_locally; exact-commit CI required",
-  "browserEndToEnd": "all nine OAuth browser scenarios passed in CI; HTML CSSOM compatibility repair awaiting final exact-commit CI",
+  "flutterTests": 87,
+  "browserEndToEnd": "required exact-commit CI now being launched; local Chromium cannot create runtime socket",
+  "migrationRollbackCompatibility": "fresh actual bf3780f-source V1-V4 JAR startup/upload/download against V5 passed on H2 and PostgreSQL",
   "realProviderAcceptance": "not_run",
-  "productionDeployment": "handled_separately_by_owner",
-  "nativeReleaseBuilds": "not_run",
-  "dockerRuntime": "not_run",
-  "publicationState": "pre-publication validation snapshot; see exact-commit CI for published artifact provenance",
-  "integratedStaticByteMatch": "passed",
-  "jarSha256BeforeCssomRepair": "5528055769607ab11dc4a9eaa4184bfd7918dffaaff79c12ae8e09a9bcb9f5cc",
-  "jarBytesBeforeCssomRepair": 57720229,
-  "localJarStatus": "pre-CSSOM-repair artifact; deploy final passing CI artifact only"
+  "productionDeployment": "not_performed",
+  "flutterWebRelease": "passed; bundled local CanvasKit"
 }

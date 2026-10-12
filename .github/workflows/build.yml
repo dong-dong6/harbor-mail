@@ -81,6 +81,11 @@ jobs:
           CHROMIUM="$BROWSER_PATH" CHROMIUM_PATH="$BROWSER_PATH" npm run test:browser --prefix client/tool
       - name: Analyze, test (H2), build Web, and package integrated JAR
         run: bash scripts/build.sh
+      - name: Test real Web headers, inline reply input and browser history
+        shell: bash
+        run: |
+          BROWSER_PATH=$(node -e "process.stdout.write(require('./client/tool/node_modules/playwright').chromium.executablePath())")
+          CHROMIUM_PATH="$BROWSER_PATH" npm run test:mail-routes --prefix client/tool
       - name: Preserve H2 test reports
         if: always()
         run: |
@@ -114,6 +119,7 @@ jobs:
           "$ready" || { cat test-results/demo.log; exit 1; }
           grep -q flutter_bootstrap.js "$RUNNER_TEMP/index.html"
           python3 scripts/smoke-demo.py --url http://127.0.0.1:8080
+          python3 scripts/smoke-static-assets.py --url http://127.0.0.1:8080 > test-results/static-assets-http.json
       - name: Create complete archive and checksum
         run: bash scripts/package.sh
       - name: Upload complete runnable build

@@ -96,8 +96,9 @@ class _Fixture {
             },
           });
         }
-        if (path.endsWith('/settings/oauth'))
+        if (path.endsWith('/settings/oauth')) {
           return _json(oauth.snapshot(demo: true));
+        }
         if (path.endsWith('/folders')) {
           return _json({'items': <Object>[]});
         }
