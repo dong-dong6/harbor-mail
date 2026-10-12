@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -936,7 +935,7 @@ class MailboxState extends State<Mailbox> {
     setState(() => inlineReply = null);
     try {
       final drafts = rows((await api.request('GET', '/drafts'))['items']);
-      if (!isCurrentSession(session)) return;
+      if (!mounted || !isCurrentSession(session)) return;
       showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -961,8 +960,9 @@ class MailboxState extends State<Mailbox> {
                               if (!mounted ||
                                   !logged ||
                                   login != loginGeneration ||
-                                  (widget.localUnlock?.locked ?? false))
+                                  (widget.localUnlock?.locked ?? false)) {
                                 return;
+                              }
                               Navigator.pop(ctx);
                               compose(draft: d);
                             },
@@ -1030,7 +1030,8 @@ class MailboxState extends State<Mailbox> {
     try {
       final bytes = await api.download(attachment['id'].toString());
       if (!isCurrentSession(session)) return;
-      final name = (attachment['fileName'] ?? 'attachment').toString()
+      final name = (attachment['fileName'] ?? 'attachment')
+          .toString()
           .replaceAll(RegExp(r'[\\/\x00-\x1F]'), '_');
       if (save != null) {
         await save(name, bytes);
@@ -1723,6 +1724,44 @@ class MailboxState extends State<Mailbox> {
                     }
                   },
             icon: const Icon(Icons.lock_outline, size: 22),
+          ),
+        if ((widget.localUnlock?.enabled ?? false) &&
+            !widget.localUnlock!.locked)
+          IconButton(
+            key: const Key('disable-local-session-lock'),
+            tooltip: '关闭本次会话的本机锁',
+            onPressed: widget.localUnlock!.busy
+                ? null
+                : () async {
+                    final controller = widget.localUnlock!;
+                    final session = sessionGeneration;
+                    if (!isCurrentSession(session)) return;
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('关闭本机会话锁？'),
+                        content: const Text(
+                          '关闭后，返回应用无需再次进行系统验证。'
+                          '本次服务器登录仍然有效，你可以随时重新启用本机锁。'
+                          '\n\n如果选择附件时本机锁中断了操作，可先关闭本机锁再选择文件。',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text('继续保护'),
+                          ),
+                          FilledButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            child: const Text('确认关闭本机锁'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (confirmed == true && isCurrentSession(session)) {
+                      controller.disable();
+                    }
+                  },
+            icon: const Icon(Icons.lock_open_outlined, size: 22),
           ),
         IconButton(
           tooltip: '账户与设置',

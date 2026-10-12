@@ -1,36 +1,34 @@
 {
-  "version": "0.2.3",
-  "sourceBaseCommit": "bf3780fb6b9cb8fbba32e240cacaddb039f85dc7",
-  "publicationState": "v0.2.3 candidate; deploy only exact-commit successful CI artifact",
+  "version": "0.3.0",
+  "sourceBaseCommit": "5a1d5328114783fc13d6ef4664c3efb9726bd327",
+  "publicationState": "Development candidate; requires exact-commit successful CI before release",
   "java": "21.0.12.1",
   "flutter": "3.47.5",
   "maven": "3.9.9",
+  "h2": {
+    "tests": 377,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
   "postgresql": {
-    "tests": 321,
-    "databaseBackedCases": 135,
-    "databaseIndependentCases": 186,
+    "tests": 377,
     "version": "17.11",
     "noH2Fallback": true,
     "failures": 0,
     "errors": 0,
     "skipped": 0
   },
-  "h2": {
-    "tests": 321,
-    "failures": 0,
-    "errors": 0,
-    "skipped": 0
-  },
   "flutterAnalyze": "passed",
-  "flutterTests": 89,
-  "browserEndToEnd": "passed desktop/mobile real Chromium diagnostic run 38217809073; final exact-commit CI remains required",
-  "migrationRollbackCompatibility": "fresh actual bf3780f-source V1-V4 JAR startup/upload/download against V5 passed on H2 and PostgreSQL",
-  "realProviderAcceptance": "not_run",
+  "flutterTests": 299,
+  "browserEndToEnd": "CI_pending; local Chromium blocked by OS socket restrictions",
+  "nativeAndroidBuild": "CI_pending",
+  "nativeWindowsBuild": "CI_pending",
+  "realHardwareAuthentication": "not_run",
+  "realDeviceEnrollment": "not_performed",
   "productionDeployment": "not_performed",
-  "flutterWebRelease": "passed; bundled local CanvasKit",
-  "generatedAt": "2026-10-12T06:44:30.937671+00:00",
-  "nodeOAuthProtocolTests": 9,
-  "htmlDomSecurityChecks": "passed; duplicate-render and no-origin-fallback budgets",
-  "nodeHistoryBridge": "passed",
-  "localPackagedHttpSmoke": "passed; standard demo, actual Dart API, account/auth and static cache checks"
+  "androidSigning": "Ephemeral development debug signature; dev.harbor.harbor_mail.dev; no production key",
+  "sessionBoundaryTests": 25,
+  "composeSessionGuardTests": 21,
+  "localLockControlsTests": 2
 }

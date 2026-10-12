@@ -1,7 +1,7 @@
 name: harbor_mail
 description: A private self-hosted multi-account mail client.
 publish_to: none
-version: 0.2.3+5
+version: 0.3.0+6
 environment:
   sdk: '>=3.9.0 <4.0.0'
 dependencies:

@@ -11,7 +11,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
+  # Keep development validation snapshots independent; never cancel an earlier APK check.
+  group: build-${{ github.workflow }}-${{ github.ref == 'refs/heads/work/v0.3.0-device-auth' && github.sha || github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
@@ -55,6 +56,73 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+  windows-native:
+    name: Compile Windows native authentication plugins
+    # The preinstalled Visual Studio 2022 C++ toolchain builds both plugins.
+    # Compile only: never launches Windows Hello, creates passkeys, or signs binaries.
+    runs-on: windows-2022
+    timeout-minutes: 35
+    env:
+      CI: 'true'
+      BOT: 'true'
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
+      DART_SUPPRESS_ANALYTICS: 'true'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install checksum-verified Flutter Windows SDK
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'flutter-windows.zip'
+          curl.exe --fail --location --retry 3 `
+            https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_3.47.5-stable.zip `
+            --output $archive
+          if ($LASTEXITCODE -ne 0) { throw 'Flutter SDK download failed' }
+          # Pinned x64 release entry from the official manifest:
+          # https://storage.googleapis.com/flutter_infra_release/releases/releases_windows.json
+          $expected = '0ccd71931f49c2fbe394b1eeb6d79af3d624058a043ea0d03d34160581624fb8'
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          if ($actual -ne $expected) { throw 'Flutter SDK SHA-256 mismatch' }
+          tar.exe -xf $archive -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw 'Flutter SDK extraction failed' }
+          (Join-Path $env:RUNNER_TEMP 'flutter\bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Build unsigned Windows release bundle
+        working-directory: client
+        run: |
+          $ErrorActionPreference = 'Stop'
+          flutter --version
+          if ($LASTEXITCODE -ne 0) { throw 'Flutter SDK verification failed' }
+          flutter config --enable-windows-desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Windows desktop configuration failed' }
+          flutter pub get --enforce-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Locked dependency resolution failed' }
+          flutter build windows --release --no-pub
+          if ($LASTEXITCODE -ne 0) { throw 'Windows native release compilation failed' }
+          $bundle = 'build\windows\x64\runner\Release'
+          foreach ($name in @('harbor_mail.exe', 'local_auth_windows_plugin.dll', 'passkeys_windows_plugin.dll')) {
+            $file = Join-Path $bundle $name
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required native output missing: $name"
+            }
+            Get-FileHash -LiteralPath $file -Algorithm SHA256
+          }
+      - name: Preserve unsigned Windows CI build
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-native-${{ github.sha }}
+          path: client/build/windows/x64/runner/Release/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
   build:
     name: Test and build Web + Java
@@ -206,7 +274,7 @@ jobs:
 
   release:
     name: Publish tagged release
-    needs: build
+    needs: [build, windows-native]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 10

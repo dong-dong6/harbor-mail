@@ -47,7 +47,7 @@ with its own S256 verifier, then both screens display a six-digit confirmation c
 owner must compare the codes and re-enter the current owner password. Approval grants the existing
 single-owner scope: full mail and settings access. A claimed device cannot create another pairing.
 The independent device bearer lasts at most eight hours and has no refresh token. Clients keep it
-in memory only. Restart persistence, biometric unlock and passkeys are outside this phase.
+in memory only. Token restart persistence is not provided. Client local unlocking and server WebAuthn are separate features documented below.
 
 Set `MAIL_ALLOWED_ORIGIN` to the exact reachable server origin, for example
 `https://mail.example.com` or `https://mail.example.com:8443`, without a trailing slash or path.

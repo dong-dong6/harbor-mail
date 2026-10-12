@@ -40,7 +40,9 @@ void main() {
       onSessionCleared: () => cleared++,
     )..token = 'expired';
     await expectLater(
-        api.request('GET', '/accounts'), throwsA(isA<ApiException>()));
+      api.request('GET', '/accounts'),
+      throwsA(isA<ApiException>()),
+    );
     expect(api.token, isNull);
     expect(cleared, 1);
     api.dispose();

@@ -1,8 +1,17 @@
-# 个人云端邮箱客户端 v0.2.3
+# 个人云端邮箱客户端 v0.3.0
 
 个人自托管邮箱客户端的第一版实现：Java 21 / Spring Boot 服务端统一连接邮箱，Flutter 客户端仅访问自己的服务端。项目包含明确隔离的合成演示模式，以及 Gmail、Outlook、Microsoft 365 E3、QQ、163 的接入实现。
 
 **这不是已接入你真实邮箱的成品部署。** 真实账号需要你在自己的环境配置 OAuth 应用或客户端授权码。当前交付的测试使用合成数据和本地协议模拟服务器，不会向真实收件人发送邮件。
+
+## v0.3.0 设备登录与 Android 下载
+
+- 网页生成两分钟单次配对二维码；App 扫描后自动填写服务地址及账户，由网页核对校验码并输入 owner 密码确认完整权限。独立设备会话可即时撤销。
+- Android 指纹/设备凭据和 Windows Hello/PIN 可为当前内存会话启用本机锁；锁屏退出及慢请求具会话隔离，已解锁会话可明确关闭本机锁。
+- 标准 WebAuthn 通行密钥注册、登录和删除；系统选择可用认证器，包括平台通行密钥与兼容安全密钥。注册和删除须 owner 密码确认。
+- CI 构建本项目 Android 开发测试 APK，网页显示实际版本、大小、SHA-256 及下载。`.dev` 安装包使用临时测试签名，不承诺跨构建覆盖升级；正式稳定签名另需配置。
+- 登录令牌仍只在内存，最多八小时；服务器地址与账户显示名可保存在原生客户端，不保存密码或 token。真实设备相机与系统身份验证需要在目标设备验收，合成测试不能替代。
+- 配对部署需要规范 HTTPS 的 `MAIL_ALLOWED_ORIGIN`；Android 原生 Passkey 还需要签名身份、服务端信任源与站点关联配置。详见 [设备登录](docs/DEVICE_PAIRING.md)、[通行密钥](docs/PASSKEY_CONTRACT.md)、[APK 下载](docs/ANDROID_DOWNLOADS.md)。
 
 ## v0.2.3 账户管理、阅读与安全更新
 
@@ -39,7 +48,7 @@
 
 ## 最快体验
 
-本版完整更新包为 `mail-client-v0.2.3.zip`：只需下载并解压这一个 ZIP，无需合并分包。本次交付不会自动发布 GitHub Release；旧 `v0.1.0` 包不含系统内 OAuth 设置。GitHub 自动生成的 Source code 压缩包只包含源码，不包含集成 JAR，需要自行构建。
+本版完整更新包为 `mail-client-v0.3.0.zip`：只需下载并解压这一个 ZIP，无需合并分包。本次交付不会自动发布 GitHub Release；旧 `v0.1.0` 包不含系统内 OAuth 设置。GitHub 自动生成的 Source code 压缩包只包含源码，不包含集成 JAR，需要自行构建。
 
 Windows 可运行 `scripts/run-demo.bat`，Linux/macOS 使用 `bash scripts/run-demo.sh`。本版完整包已包含集成 JAR，不需要分包合并。Windows 批处理脚本已提供，但未在 Windows 系统执行验收。
 

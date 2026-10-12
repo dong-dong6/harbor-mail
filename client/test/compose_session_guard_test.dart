@@ -195,19 +195,23 @@ void main() {
     });
   }
 
-  testWidgets('file stream cannot persist after lock and unlock', (tester) async {
+  testWidgets('file stream cannot persist after lock and unlock',
+      (tester) async {
     final api = ControlledApi();
     final session = SessionEpoch();
     final key = await mountEditor(tester, api, session);
-    final bytes = Stream<List<int>>.fromIterable([[1, 2, 3]]).map((chunk) {
-      session.lock();
-      session.unlock();
-      return chunk;
+    await tester.runAsync(() async {
+      final bytes = Stream<List<int>>.fromIterable([
+        [1, 2, 3]
+      ]).map((chunk) {
+        session.lock();
+        session.unlock();
+        return chunk;
+      });
+      final upload = key.currentState!.upload();
+      picker.picked.complete(syntheticFile(stream: bytes));
+      await upload;
     });
-    final upload = key.currentState!.upload();
-    picker.picked.complete(syntheticFile(stream: bytes));
-    await tester.pumpAndSettle();
-    await upload;
     await tester.pumpAndSettle();
     expect(api.calls, isEmpty);
     expect(tester.takeException(), isNull);
