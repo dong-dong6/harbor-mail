@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' show SemanticsRole;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -349,5 +350,39 @@ void main() {
     expect(await go, isTrue);
     expect(find.byType(OAuthSettingsPage), findsNothing);
     await _disposeMailbox(tester);
+  });
+  testWidgets('browser harness roles and labels match rendered semantics',
+      (tester) async {
+    final handle = tester.ensureSemantics();
+    final f = _Fixture()..oauthFeature = true;
+    final nav = _Navigation('/mail/m0');
+    await _signIn(tester, f, navigation: nav);
+    await tester.tap(find.text('回复'));
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel('回复正文'), findsOneWidget);
+    expect(find.bySemanticsLabel('显示原邮件'), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('inline-body')), 'dirty');
+    final back = nav.go('/mail');
+    await tester.pumpAndSettle();
+    expect(
+        tester.getSemantics(find.byType(AlertDialog)).getSemanticsData().role,
+        SemanticsRole.alertDialog);
+    expect(find.bySemanticsLabel('放弃未保存的更改？'), findsOneWidget);
+    expect(find.bySemanticsLabel('继续编辑'), findsOneWidget);
+    await tester.tap(find.text('放弃更改'));
+    await tester.pumpAndSettle();
+    await back;
+    final oauthRoute = nav.go('/settings/oauth');
+    await tester.pumpAndSettle();
+    await oauthRoute;
+    expect(find.bySemanticsLabel('演示环境 · 仅可查看配置状态。所有输入和保存均已禁用，请勿输入真实密钥。'),
+        findsOneWidget);
+    f.missingDetails = true;
+    final missing = nav.go('/mail/missing');
+    await tester.pumpAndSettle();
+    await missing;
+    expect(find.bySemanticsLabel('加载失败，重试'), findsOneWidget);
+    await _disposeMailbox(tester);
+    handle.dispose();
   });
 }

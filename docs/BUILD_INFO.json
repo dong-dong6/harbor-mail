@@ -22,7 +22,7 @@
     "skipped": 0
   },
   "flutterAnalyze": "passed",
-  "flutterTests": 87,
+  "flutterTests": 89,
   "browserEndToEnd": "isolated Chromium OAuth/HTML/image tests passed on candidate CI; full UI harness must pass exact-commit CI before deployment",
   "migrationRollbackCompatibility": "fresh actual bf3780f-source V1-V4 JAR startup/upload/download against V5 passed on H2 and PostgreSQL",
   "realProviderAcceptance": "not_run",

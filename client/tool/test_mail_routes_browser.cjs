@@ -35,11 +35,22 @@ const server=createServer((req,res)=>{
   for(const width of [1440,390]){
    const page=await browser.newPage({viewport:{width,height:1100}});const errors=[],consoleLog=[],network=[];page.on('pageerror',e=>errors.push(String(e)));page.on('console',m=>consoleLog.push({type:m.type(),text:m.text()}));page.on('response',r=>network.push({url:r.url(),status:r.status()}));page.on('requestfailed',r=>network.push({url:r.url(),failure:r.failure()}));
    await page.route('**/*',r=>r.request().url().startsWith(base)||r.request().url().startsWith('data:')?r.continue():r.abort());
-   const semantic=(text,prefix=false)=>page.locator('semanticValue='+JSON.stringify({text,prefix}));
+   const semantic=(text,prefix=false,line=false)=>page.locator('semanticValue='+JSON.stringify({text,prefix,line}));
    const hash=route=>page.waitForFunction(value=>location.hash===value,'#'+route);
    const login=async()=>{const placeholder=page.locator('flt-semantics-placeholder');await Promise.race([placeholder.waitFor({state:'attached'}),page.getByRole('textbox').first().waitFor({state:'visible'})]);await page.evaluate(()=>document.querySelector('flt-semantics-placeholder')?.click());await page.getByRole('textbox').first().waitFor({state:'visible'});await page.getByRole('textbox').first().fill('owner');await page.getByRole('textbox').nth(1).fill('synthetic-only');await page.getByRole('button',{name:'登录',exact:true}).click();};
    const back=()=>page.evaluate(()=>history.back()),forward=()=>page.evaluate(()=>history.forward());
-   const reveal=async locator=>{for(let n=0;n<12;n++){const box=await locator.boundingBox().catch(()=>null);if(box&&box.y>=0&&box.y+Math.min(box.height,80)<1050)return;await page.mouse.move(width-14,850);await page.mouse.wheel(0,box&&box.y<0?-450:450);await page.waitForTimeout(120);}};
+   const reveal=async locator=>{
+    for(let n=0;n<12;n++){
+     const box=await locator.boundingBox({timeout:1000}).catch(()=>null);
+     if(box&&box.y>=0&&box.y+Math.min(box.height,80)<1050)return;
+     // Wheel within the reader's padding, not inside its opaque iframe and not
+     // outside the scrollable card. This works at both tested viewport widths.
+     const frame=await page.locator('iframe[title="邮件正文"]').boundingBox({timeout:1000}).catch(()=>null);
+     await page.mouse.move(frame?Math.max(1,frame.x-8):width-40,850);
+     await page.mouse.wheel(0,box&&box.y<0?-450:450);await page.waitForTimeout(120);
+    }
+    throw new Error('Reader control did not become visible after scrolling: '+locator);
+   };
    try {
    console.log(`CHECK ${width}: copied link and header`);
    await page.goto(base+'/#/mail/m2');await login();await hash('/mail/m2');
@@ -55,12 +66,12 @@ const server=createServer((req,res)=>{
    assert.equal(await iframe.evaluate(e=>e.contentDocument),null,'HTML body stays opaque sandboxed');
    await page.screenshot({path:path.join(out,`header-${width}.png`)});
    await page.getByRole('button',{name:'返回列表',exact:true}).click();await hash('/mail');
-   await page.getByText('ROUTE SUBJECT ONE',{exact:true}).click();await hash('/mail/m1');
+   await page.getByRole('button',{name:/\bROUTE SUBJECT ONE\b/}).click();await hash('/mail/m1');
    await back();await hash('/mail');await forward();await hash('/mail/m1');
    console.log(`CHECK ${width}: browser history and inline editor`);
    const reply=page.getByRole('button',{name:'回复',exact:true});await reveal(reply);await reply.click();
    const body=page.getByRole('textbox',{name:'回复正文',exact:true});await reveal(body);await body.fill('KEEP REPLY THROUGH BROWSER BACK');
-   assert.equal(await page.getByRole('dialog').count(),0,'reply is inline rather than modal');
+   assert.equal(await page.locator('[role="dialog"],[role="alertdialog"]').count(),0,'reply is inline rather than modal');
    if(width===1440){
     const warned=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Missing dirty beforeunload warning')),10000);page.once('dialog',async d=>{try{assert.equal(d.type(),'beforeunload');await d.dismiss();clearTimeout(timer);resolve();}catch(e){clearTimeout(timer);reject(e);}});});
     await Promise.all([warned,page.reload({waitUntil:'domcontentloaded'}).catch(()=>{})]);
@@ -68,7 +79,7 @@ const server=createServer((req,res)=>{
    }
    assert.equal(await iframe.evaluate(e=>e.style.pointerEvents),'auto','iframe is interactive outside dialogs');
    await reveal(page.getByRole('button',{name:'显示原邮件',exact:true}));await page.getByRole('button',{name:'显示原邮件',exact:true}).click();await page.getByRole('button',{name:'收起原邮件',exact:true}).click();
-   await back();await page.getByText('放弃未保存的更改？',{exact:true}).waitFor();await hash('/mail/m1');assert.equal(await iframe.evaluate(e=>e.style.pointerEvents),'none','dialog shields native HTML iframe');
+   await back();await page.getByRole('alertdialog').waitFor();await semantic('放弃未保存的更改？',false,true).waitFor();await hash('/mail/m1');assert.equal(await iframe.evaluate(e=>e.style.pointerEvents),'none','dialog shields native HTML iframe');
    await page.getByRole('button',{name:'继续编辑',exact:true}).click();assert.equal(await body.inputValue(),'KEEP REPLY THROUGH BROWSER BACK');
    await back();await page.getByRole('button',{name:'放弃更改',exact:true}).click();await hash('/mail');await forward();await hash('/mail/m1');
    console.log(`CHECK ${width}: refresh and resume`);
@@ -79,10 +90,10 @@ const server=createServer((req,res)=>{
     await page.getByRole('button',{name:'添加邮箱',exact:true}).click();await hash('/settings/add');
     await back();await hash('/settings/accounts');
     await page.getByRole('button',{name:'系统 OAuth 设置',exact:true}).click();await hash('/settings/oauth');
-    await page.getByText('演示环境 · 仅可查看配置状态。所有输入和保存均已禁用，请勿输入真实密钥。',{exact:true}).waitFor();
+    await semantic('演示环境 · 仅可查看配置状态。所有输入和保存均已禁用，请勿输入真实密钥。',false,true).waitFor();
     await back();await hash('/settings/accounts');await back();await hash('/mail/m1');
    }
-   await page.evaluate(()=>{location.hash='/mail/missing';});await page.getByText('加载失败，重试',{exact:true}).waitFor();await hash('/mail/missing');
+   await page.evaluate(()=>{location.hash='/mail/missing';});await page.getByRole('button',{name:'加载失败，重试',exact:true}).waitFor();await hash('/mail/missing');
    assert.equal(errors.length,0,errors.join('\n'));
    } catch(e) { console.error('Route failure URL:',page.url());
     await page.screenshot({path:path.join(out,`failure-${width}.png`)}).catch(()=>{});

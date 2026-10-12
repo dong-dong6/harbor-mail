@@ -11,4 +11,7 @@ assert.equal(selector.query(doc,exact('Readonly value')),shadow.querySelector('i
 assert.equal(selector.queryAll(doc,exact('subject')).length,0);
 assert.equal(selector.queryAll(doc,JSON.stringify({text:'Date 2026',prefix:true})).length,1);
 assert.equal(selector.query(doc,exact('not present')),null);
+const merged=doc.createElement('flt-semantics');merged.setAttribute('aria-label','Heading\nExact notice\nFooter');shadow.append(merged);
+assert.equal(selector.query(doc,JSON.stringify({text:'Exact notice',line:true})),merged);
+assert.equal(selector.query(doc,JSON.stringify({text:'notice',line:true})),null);
 console.log('PASS accessible selector: exact ARIA label, live native value, open shadow DOM, prefix date, no partial/ancestor fallback');
