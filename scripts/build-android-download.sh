@@ -38,9 +38,11 @@ if [ -n "${GITHUB_SHA:-}" ] && [ "$SOURCE_COMMIT" != "$GITHUB_SHA" ]; then
   echo 'Checkout does not match the current CI source commit' >&2; exit 1
 fi
 python3 "$ROOT/scripts/test-prepare-android-download.py"
+bash "$ROOT/client/android/tests/run-policy-tests.sh"
 (cd "$ROOT/client" && flutter pub get --enforce-lockfile && flutter build apk --debug --no-pub)
 python3 "$ROOT/scripts/prepare-android-download.py" \
   --apk "$ROOT/client/build/app/outputs/flutter-apk/app-debug.apk" \
   --destination "$ROOT/server/src/main/resources/META-INF/android-download" \
   --aapt "$BUILD_TOOLS/aapt" --apksigner "$BUILD_TOOLS/apksigner" \
-  --version-name "$VERSION" --version-code "$VERSION_CODE" --source-commit "$SOURCE_COMMIT"
+  --version-name "$VERSION" --version-code "$VERSION_CODE" --source-commit "$SOURCE_COMMIT" \
+  --release-notes-file "$ROOT/docs/ANDROID_RELEASE_NOTES.txt"

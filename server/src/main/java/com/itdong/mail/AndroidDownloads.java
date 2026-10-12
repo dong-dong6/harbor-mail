@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
@@ -19,10 +20,11 @@ public final class AndroidDownloads {
   static final String MANIFEST_PATH = "/downloads/android/manifest.json";
   static final String APK_PATH = "/downloads/android/app.apk";
   static final long MAX_APK_BYTES = 256L * 1024 * 1024;
-  static final int MAX_MANIFEST_BYTES = 16 * 1024;
+  static final int MAX_MANIFEST_BYTES = 64 * 1024;
+  static final int MAX_RELEASE_NOTES_CHARS = 4000;
   private static final ObjectMapper MAPPER = new ObjectMapper(JsonFactory.builder()
       .streamReadConstraints(StreamReadConstraints.builder().maxNestingDepth(8)
-          .maxStringLength(256).maxNumberLength(20).build())
+          .maxStringLength(MAX_RELEASE_NOTES_CHARS * 2).maxNumberLength(20).build())
       .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build())
       .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
   private final Resource apk;
@@ -62,17 +64,22 @@ public final class AndroidDownloads {
     }
     if (bytes.length > MAX_MANIFEST_BYTES) throw new IOException("Manifest limit");
     var root = MAPPER.readTree(bytes);
-    if (root == null || !root.isObject() || root.size() != 11
+    if (root == null || !root.isObject() || root.size() != (root.has("releaseNotes") ? 12 : 11)
         || !root.path("schemaVersion").isIntegralNumber() || !root.path("schemaVersion").canConvertToInt()
         || root.path("schemaVersion").intValue() != 1
         || !root.path("available").isBoolean() || !root.path("available").booleanValue()
         || !APK_PATH.equals(root.path("downloadPath").textValue())
         || !"harbor-mail-dev.apk".equals(root.path("fileName").textValue())
         || !"dev.harbor.harbor_mail.dev".equals(root.path("packageName").textValue())
+        || root.path("versionName").asText("").length() > 64
         || !root.path("versionName").asText("").matches("[0-9]+\\.[0-9]+\\.[0-9]+")
         || !root.path("sourceCommit").asText("").matches("[0-9a-f]{40}")
         || !root.path("sha256").asText("").matches("[0-9a-f]{64}"))
       throw new IOException("Manifest format");
+    var notes = root.get("releaseNotes");
+    if (notes != null && (!notes.isTextual()
+        || notes.textValue().codePointCount(0, notes.textValue().length()) > MAX_RELEASE_NOTES_CHARS))
+      throw new IOException("Release notes format");
     var versionCode = root.path("versionCode");
     var size = root.path("sizeBytes");
     if (!versionCode.isIntegralNumber() || !versionCode.canConvertToInt()
@@ -104,7 +111,7 @@ public final class AndroidDownloads {
         || !HexFormat.of().formatHex(digest.digest()).equals(root.path("sha256").textValue()))
       throw new IOException("APK integrity");
     // Build the public response explicitly, never pass through arbitrary metadata.
-    return Map.ofEntries(
+    var result = new LinkedHashMap<String, Object>(Map.ofEntries(
         Map.entry("schemaVersion", 1), Map.entry("available", true),
         Map.entry("downloadPath", APK_PATH), Map.entry("fileName", "harbor-mail-dev.apk"),
         Map.entry("packageName", root.path("packageName").textValue()),
@@ -113,7 +120,9 @@ public final class AndroidDownloads {
         Map.entry("sha256", root.path("sha256").textValue()),
         Map.entry("sourceCommit", root.path("sourceCommit").textValue()),
         Map.entry("signing", Map.of("classification", "development-debug",
-            "certificateSha256", signing.path("certificateSha256").textValue())));
+            "certificateSha256", signing.path("certificateSha256").textValue()))));
+    if (notes != null) result.put("releaseNotes", notes.textValue());
+    return result;
   }
 
   Map<String, Object> manifest() { return manifest; }

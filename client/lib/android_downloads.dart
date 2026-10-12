@@ -5,14 +5,16 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
+import 'login_layout.dart';
+
 const _manifestPath = '/downloads/android/manifest.json';
 const _apkPath = '/downloads/android/app.apk';
-const _maxManifestBytes = 16 * 1024;
+const _maxManifestBytes = 64 * 1024;
 
 /// Public build information contains no session, pairing secret, or local path.
 class AndroidDownloadManifest {
   final bool available;
-  final String versionName, sha256, certificateSha256;
+  final String versionName, sha256, certificateSha256, releaseNotes;
   final int versionCode, sizeBytes;
 
   const AndroidDownloadManifest._({
@@ -22,6 +24,7 @@ class AndroidDownloadManifest {
     this.sizeBytes = 0,
     this.sha256 = '',
     this.certificateSha256 = '',
+    this.releaseNotes = '',
   });
 
   factory AndroidDownloadManifest.parse(Object? value) {
@@ -39,6 +42,12 @@ class AndroidDownloadManifest {
     final size = value['sizeBytes'];
     final hash = value['sha256'];
     final signing = value['signing'];
+    final notes = value.containsKey('releaseNotes')
+        ? value['releaseNotes']
+        : '';
+    if (notes is! String || notes.runes.length > 4000) {
+      throw const FormatException('Invalid release notes');
+    }
     final certificate = signing is Map ? signing['certificateSha256'] : null;
     if (value['downloadPath'] != _apkPath ||
         value['fileName'] != 'harbor-mail-dev.apk' ||
@@ -67,6 +76,7 @@ class AndroidDownloadManifest {
       sizeBytes: size,
       sha256: hash,
       certificateSha256: certificate,
+      releaseNotes: notes,
     );
   }
 }
@@ -77,12 +87,14 @@ class AndroidDownloadCard extends StatefulWidget {
   final Uri? origin;
   final http.Client? client;
   final Future<bool> Function(Uri)? openDownload;
+  final bool? compactInstructions;
 
   const AndroidDownloadCard({
     super.key,
     this.origin,
     this.client,
     this.openDownload,
+    this.compactInstructions,
   });
 
   @override
@@ -250,6 +262,18 @@ class _AndroidDownloadCardState extends State<AndroidDownloadCard> {
   @override
   Widget build(BuildContext context) {
     final manifest = _manifest;
+    final compactInstructions =
+        widget.compactInstructions ??
+        MediaQuery.sizeOf(context).width < ResponsiveLoginLayout.wideBreakpoint;
+    const installationSteps = Column(
+      key: Key('android-installation-steps'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('安装：下载后打开 APK，仅为此次使用的浏览器或文件管理器允许安装来源，安装后关闭该权限。'),
+        SizedBox(height: 8),
+        Text('安装并打开 App 后，扫描网页“连接设备”二维码，再在网页核对设备与验证码并批准。'),
+      ],
+    );
     return Card(
       key: const Key('android-download-card'),
       child: Padding(
@@ -272,9 +296,12 @@ class _AndroidDownloadCardState extends State<AndroidDownloadCard> {
                 '${(manifest.sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB',
               ),
               const SizedBox(height: 8),
-              const Text('开发测试版 · Android 调试签名。请使用测试账号；不要用于正式邮件。'),
               const Text(
-                '仅适用于 Android。不同 CI 构建的签名可能变化，更新时可能需要卸载旧测试版，手机上的本地数据会被清除。',
+                '开发测试版 · Android 调试签名。请使用测试账号；不要用于正式邮件。',
+                key: Key('android-development-warning'),
+              ),
+              const Text(
+                '仅适用于 Android。不同 CI 构建的签名可能变化，导致无法覆盖更新。请保留现有 App 和本地数据，联系管理员确认兼容版本。',
               ),
               const SizedBox(height: 12),
               FilledButton.icon(
@@ -284,8 +311,16 @@ class _AndroidDownloadCardState extends State<AndroidDownloadCard> {
                 label: Text(_opening ? '正在打开…' : '下载测试 APK'),
               ),
               const SizedBox(height: 8),
-              const Text('安装：下载后打开 APK，仅为此次使用的浏览器或文件管理器允许安装来源，安装后关闭该权限。'),
-              const Text('安装并打开 App 后，扫描网页“连接设备”二维码，再在网页核对设备与验证码并批准。'),
+              if (compactInstructions)
+                const ExpansionTile(
+                  key: Key('android-installation-expander'),
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: EdgeInsets.only(bottom: 12),
+                  title: Text('安装与连接说明'),
+                  children: [installationSteps],
+                )
+              else
+                installationSteps,
               ExpansionTile(
                 tilePadding: EdgeInsets.zero,
                 title: const Text('校验文件与签名'),

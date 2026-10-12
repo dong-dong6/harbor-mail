@@ -1,34 +1,30 @@
 {
-  "version": "0.3.0",
-  "sourceBaseCommit": "5a1d5328114783fc13d6ef4664c3efb9726bd327",
-  "publicationState": "Development candidate; requires exact-commit successful CI before release",
+  "version": "0.3.1",
+  "sourceBaseCommit": "c074f282e48e124cf0155ce81bf6d70091113afd",
+  "publicationState": "Development fixes; exact-commit CI and artifact verification pending",
   "java": "21.0.12.1",
   "flutter": "3.47.5",
   "maven": "3.9.9",
-  "h2": {
-    "tests": 377,
-    "failures": 0,
-    "errors": 0,
-    "skipped": 0
-  },
-  "postgresql": {
-    "tests": 377,
-    "version": "17.11",
-    "noH2Fallback": true,
-    "failures": 0,
-    "errors": 0,
-    "skipped": 0
-  },
-  "flutterAnalyze": "passed",
-  "flutterTests": 301,
-  "browserEndToEnd": "CI_pending; local Chromium blocked by OS socket restrictions",
-  "nativeAndroidBuild": "CI_pending",
-  "nativeWindowsBuild": "CI_pending",
   "realHardwareAuthentication": "not_run",
   "realDeviceEnrollment": "not_performed",
   "productionDeployment": "not_performed",
-  "androidSigning": "Ephemeral development debug signature; dev.harbor.harbor_mail.dev; no production key",
-  "sessionBoundaryTests": 25,
-  "composeSessionGuardTests": 21,
-  "localLockControlsTests": 4
+  "androidSigning": "Ephemeral development debug signature; no fixed production key; cross-CI in-place update may be incompatible",
+  "flutterAnalyze": "passed local integrated source",
+  "flutterTests": 435,
+  "h2": {
+    "tests": 379,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "nativeApiCompilation": "passed 5 Java files plus MainActivity Kotlin against actual Android/AndroidX/Flutter APIs; not an APK build",
+  "nativePolicyAssertions": {
+    "updater": 82,
+    "sessionVault": 44
+  },
+  "webReleaseBuild": "passed local",
+  "browserEndToEnd": "new desktop/mobile compiled-Web checks added; exact-commit Chromium CI pending",
+  "postgresql": "pending exact-commit CI",
+  "nativeAndroidBuild": "pending exact-commit CI",
+  "nativeWindowsBuild": "pending exact-commit CI"
 }

@@ -10,12 +10,19 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 class _SyntheticUnlock implements LocalUnlockAuthenticator {
+  int prompts = 0;
+  LocalUnlockResult result = LocalUnlockResult.verified;
+  Completer<LocalUnlockResult>? pending;
   @override
   bool get supported => true;
   @override
   Future<bool> isAvailable() async => true;
   @override
-  Future<LocalUnlockResult> authenticate() async => LocalUnlockResult.verified;
+  Future<LocalUnlockResult> authenticate() async {
+    prompts++;
+    return pending?.future ?? result;
+  }
+
   @override
   Future<void> cancel() async {}
 }
@@ -26,6 +33,7 @@ Future<
 _mount(
   WidgetTester tester, {
   bool waitForResume = true,
+  _SyntheticUnlock? authenticator,
   Future<http.Response>? Function(http.Request)? intercept,
 }) async {
   tester.view.physicalSize = const Size(320, 800);
@@ -48,7 +56,9 @@ _mount(
       );
     }),
   )..token = 'synthetic-session';
-  final unlock = LocalUnlockController(authenticator: _SyntheticUnlock());
+  final unlock = LocalUnlockController(
+    authenticator: authenticator ?? _SyntheticUnlock(),
+  );
   addTearDown(unlock.dispose);
   await tester.pumpWidget(MailApp(api: api, unlockController: unlock));
   final mailbox = tester.state<MailboxState>(find.byType(Mailbox));
@@ -60,6 +70,21 @@ _mount(
     await tester.pump();
   }
   return (unlock: unlock, mailbox: mailbox, resumed: resumed);
+}
+
+Future<void> _openDeviceSecurity(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('local-session-lock')));
+  await tester.pumpAndSettle();
+  expect(find.text('设备安全与登录'), findsOneWidget);
+  final toggle = find.byKey(const Key('device-lock-switch'));
+  await tester.ensureVisible(toggle);
+  expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+}
+
+Future<void> _enableThroughSettings(WidgetTester tester) async {
+  await _openDeviceSecurity(tester);
+  await tester.tap(find.byKey(const Key('device-lock-switch')));
+  await tester.pumpAndSettle();
 }
 
 void main() {
@@ -103,13 +128,76 @@ void main() {
           .onPressed,
       isNotNull,
     );
-    await tester.tap(find.byKey(const Key('local-session-lock')));
+    await _openDeviceSecurity(tester);
+    expect(fixture.unlock.enabled, isFalse);
+    await tester.tap(find.byKey(const Key('device-lock-switch')));
     await tester.pumpAndSettle();
     expect(fixture.unlock.enabled, isTrue);
     expect(fixture.mailbox.poll?.isActive, isTrue);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
+
+  testWidgets('settings defaults off and commits on only after OS success', (
+    tester,
+  ) async {
+    final auth = _SyntheticUnlock()..pending = Completer<LocalUnlockResult>();
+    final fixture = await _mount(tester, authenticator: auth);
+    expect(fixture.unlock.enabled, isFalse);
+    expect(auth.prompts, 0);
+    await _openDeviceSecurity(tester);
+    expect(auth.prompts, 0);
+    expect(find.textContaining('默认关闭。手动开启'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('device-lock-switch')));
+    await tester.pump();
+    expect(auth.prompts, 1);
+    expect(fixture.unlock.enabled, isFalse);
+    expect(fixture.unlock.busy, isTrue);
+    expect(
+      tester
+          .widget<SwitchListTile>(
+            find.byKey(const Key('device-lock-switch'), skipOffstage: false),
+          )
+          .value,
+      isFalse,
+    );
+    auth.pending!.complete(LocalUnlockResult.verified);
+    await tester.pumpAndSettle();
+    expect(fixture.unlock.enabled, isTrue);
+    expect(fixture.unlock.locked, isFalse);
+    expect(
+      tester
+          .widget<SwitchListTile>(find.byKey(const Key('device-lock-switch')))
+          .value,
+      isTrue,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+    'canceling first settings toggle leaves switch off and session usable',
+    (tester) async {
+      final auth = _SyntheticUnlock()..result = LocalUnlockResult.canceled;
+      final fixture = await _mount(tester, authenticator: auth);
+      await _enableThroughSettings(tester);
+      expect(auth.prompts, 1);
+      expect(fixture.unlock.enabled, isFalse);
+      expect(fixture.unlock.locked, isFalse);
+      expect(
+        tester
+            .widget<SwitchListTile>(find.byKey(const Key('device-lock-switch')))
+            .value,
+        isFalse,
+      );
+      expect(find.textContaining('已取消验证，本地锁定未开启'), findsOneWidget);
+      expect(fixture.mailbox.logged, isTrue);
+      expect(fixture.mailbox.api.token, 'synthetic-session');
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets('enabled local lock remains manually usable during refresh IO', (
     tester,
@@ -149,8 +237,7 @@ void main() {
   ) async {
     final fixture = await _mount(tester);
     expect(find.byKey(const Key('disable-local-session-lock')), findsNothing);
-    await tester.tap(find.byKey(const Key('local-session-lock')));
-    await tester.pumpAndSettle();
+    await _enableThroughSettings(tester);
     expect(fixture.unlock.enabled, isTrue);
     expect(fixture.unlock.locked, isFalse);
     expect(find.byTooltip('关闭本次会话的本机锁'), findsOneWidget);

@@ -17,6 +17,7 @@ class LocalUnlockController extends ChangeNotifier {
   bool _locked = false;
   bool _busy = false;
   bool _canceling = false;
+  bool _externalAuthenticationBusy = false;
   bool _disposed = false;
   bool _foreground = true;
   AppLifecycleState? _lifecycle;
@@ -29,8 +30,24 @@ class LocalUnlockController extends ChangeNotifier {
   bool get hasSession => _session != null;
   bool get enabled => _enabled;
   bool get locked => _locked;
-  bool get busy => _busy || _canceling;
+  bool get busy => _busy || _canceling || _externalAuthenticationBusy;
   String? get message => _message;
+
+  /// Prevent a second local-auth prompt while another feature owns an OS
+  /// verification prompt (for example, the encrypted session vault). The owner
+  /// must check [busy] before starting and clear this flag in its finally block.
+  /// Clearing it never grants local unlock or bypasses lifecycle locking.
+  void setExternalAuthenticationBusy(bool value) {
+    if (_disposed || _externalAuthenticationBusy == value) return;
+    _externalAuthenticationBusy = value;
+    if (value) {
+      // Also reject any stale local verification result or pending resume grant.
+      // Cancellation is best effort; callers must not start an external prompt
+      // while an existing local prompt/cancellation is still busy.
+      _invalidateVerification();
+    }
+    _notify();
+  }
 
   /// Use a fresh opaque Object after each server login/pairing and null on
   /// logout/expiry. Never use this to create or restore a server session.
@@ -44,9 +61,9 @@ class LocalUnlockController extends ChangeNotifier {
     _notify();
   }
 
-  /// On supported, configured devices, enabling immediately shields the
-  /// session and verifies the user. A canceled/failed attempt remains locked;
-  /// retry or sign out instead of exposing the session without verification.
+  /// Explicit opt-in shields the session while checking the OS prompt, but
+  /// commits the setting only after successful verification. Canceling or
+  /// failing this first setup leaves the existing signed-in session unchanged.
   Future<bool> enable() async {
     if (_disposed || !hasSession || busy || _enabled) return false;
     if (!supported) {
@@ -70,14 +87,17 @@ class LocalUnlockController extends ChangeNotifier {
         _message = '请返回应用后再启用本地锁定。';
         return false;
       }
-      _enabled = true;
       _locked = true;
       _notify();
-      return await _verify(generation);
+      return await _verify(generation, enabling: true);
     } catch (_) {
-      if (_isCurrent(generation)) _message = _failureMessage;
+      if (_isCurrent(generation)) _message = _setupFailureMessage;
       return false;
     } finally {
+      // No newer prompt can start while this attempt is busy. Also clear the
+      // provisional shield after lifecycle/session invalidation, but never
+      // roll back a setting that has already passed its first verification.
+      if (!_enabled) _locked = false;
       _busy = false;
       _notify();
     }
@@ -126,12 +146,14 @@ class LocalUnlockController extends ChangeNotifier {
   }
 
   static const _failureMessage = '系统验证未完成。请重试，或退出后重新登录服务器。';
+  static const _setupFailureMessage = '系统验证未完成，本地锁定未开启。你可以稍后重新开启。';
 
-  Future<bool> _verify(int generation) async {
+  Future<bool> _verify(int generation, {bool enabling = false}) async {
     final result = await _authenticator.authenticate();
     if (!_isCurrent(generation)) return false;
     switch (result) {
       case LocalUnlockResult.verified:
+        if (enabling) _enabled = true;
         if (_foreground) {
           _locked = false;
           _message = null;
@@ -144,13 +166,17 @@ class LocalUnlockController extends ChangeNotifier {
         }
         return true;
       case LocalUnlockResult.canceled:
-        _message = '已取消验证，当前会话仍已锁定。可重试或退出后重新登录。';
+        _message = enabling ? '已取消验证，本地锁定未开启。' : '已取消验证，当前会话仍已锁定。可重试或退出后重新登录。';
       case LocalUnlockResult.lockedOut:
-        _message = '系统验证暂时锁定。请稍后重试，或退出后重新登录服务器。';
+        _message = enabling
+            ? '系统验证暂时锁定，本地锁定未开启。请稍后重试。'
+            : '系统验证暂时锁定。请稍后重试，或退出后重新登录服务器。';
       case LocalUnlockResult.unavailable:
-        _message = '系统验证不可用。请检查系统设置，或退出后重新登录服务器。';
+        _message = enabling
+            ? '系统验证不可用，本地锁定未开启。请检查系统设置后重试。'
+            : '系统验证不可用。请检查系统设置，或退出后重新登录服务器。';
       case LocalUnlockResult.failed:
-        _message = _failureMessage;
+        _message = enabling ? _setupFailureMessage : _failureMessage;
     }
     return false;
   }
@@ -189,6 +215,8 @@ class LocalUnlockController extends ChangeNotifier {
   void _invalidateVerification() {
     _generation++;
     _verifiedOnResume = null;
+    // An interrupted first setup has not opted the session into local locking.
+    if (!_enabled) _locked = false;
     if (_busy && !_canceling) {
       _canceling = true;
       unawaited(_cancelSafely());

@@ -15,6 +15,7 @@ import tempfile
 
 MAX_APK_BYTES = 256 * 1024 * 1024
 MAX_TOOL_BYTES = 64 * 1024
+MAX_RELEASE_NOTES_CHARS = 4000
 PACKAGE = 'dev.harbor.harbor_mail.dev'
 DOWNLOAD_PATH = '/downloads/android/app.apk'
 
@@ -50,11 +51,31 @@ def inspect_metadata(badging, certificates, version_name, version_code):
             'signing': {'classification': 'development-debug', 'certificateSha256': certs[0][1].lower()}}
 
 
-def prepare(apk, destination, aapt, apksigner, version_name, version_code, source_commit):
+def read_release_notes(path):
+    if path is None:
+        return None
+    # UTF-8 uses at most four bytes per Unicode code point. Never load an
+    # unbounded release document into the build's manifest.
+    limit = MAX_RELEASE_NOTES_CHARS * 4
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Release notes must be a regular UTF-8 text file')
+    with path.open('rb') as source:
+        data = source.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError('Release notes exceed 4000 characters')
+    notes = data.decode('utf-8', errors='strict')
+    if len(notes) > MAX_RELEASE_NOTES_CHARS:
+        raise ValueError('Release notes exceed 4000 characters')
+    return notes
+
+
+def prepare(apk, destination, aapt, apksigner, version_name, version_code, source_commit,
+            release_notes_file=None):
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version_name) or not 1 <= version_code <= 2100000000:
         raise ValueError('Expected a stable project version and positive Android version code')
     if not re.fullmatch(r'[0-9a-f]{40}', source_commit):
         raise ValueError('A full source commit is required')
+    release_notes = read_release_notes(release_notes_file)
     if apk.is_symlink() or not apk.is_file() or not 1 <= apk.stat().st_size <= MAX_APK_BYTES:
         raise ValueError('A real APK within the size limit is required')
     destination.mkdir(parents=True, exist_ok=True)
@@ -82,8 +103,10 @@ def prepare(apk, destination, aapt, apksigner, version_name, version_code, sourc
         manifest = {'schemaVersion': 1, 'available': True, 'downloadPath': DOWNLOAD_PATH,
                     'fileName': 'harbor-mail-dev.apk', 'sizeBytes': size, 'sha256': digest.hexdigest(),
                     'sourceCommit': source_commit, **metadata}
+        if release_notes is not None:
+            manifest['releaseNotes'] = release_notes
         staged_manifest = Path(work) / 'manifest.json'
-        staged_manifest.write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n', encoding='utf-8')
+        staged_manifest.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + '\n', encoding='utf-8')
         # Package offline after both files are written; never run this against a live exploded server.
         os.replace(staged, destination / 'app.apk')
         os.replace(staged_manifest, destination / 'manifest.json')
@@ -99,10 +122,12 @@ if __name__ == '__main__':
     parser.add_argument('--version-name', required=True)
     parser.add_argument('--version-code', type=int, required=True)
     parser.add_argument('--source-commit', required=True)
+    parser.add_argument('--release-notes-file', type=Path,
+                        help='Optional UTF-8 plain-text release notes, at most 4000 Unicode characters')
     args = parser.parse_args()
     try:
         metadata = prepare(args.apk, args.destination, args.aapt, args.apksigner,
-                           args.version_name, args.version_code, args.source_commit)
+                           args.version_name, args.version_code, args.source_commit, args.release_notes_file)
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         raise SystemExit('Android download preparation failed: ' + str(exc)) from exc
     print(json.dumps(metadata, sort_keys=True))

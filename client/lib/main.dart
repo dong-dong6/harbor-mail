@@ -29,6 +29,9 @@ import 'server_profile.dart';
 import 'device_scanner.dart';
 import 'local_unlock.dart';
 import 'android_downloads.dart';
+import 'login_layout.dart';
+import 'session_vault.dart';
+import 'device_security_card.dart';
 import 'passkey_api.dart';
 import 'passkey_login.dart';
 import 'passkey_settings.dart';
@@ -49,7 +52,16 @@ class MailApp extends StatefulWidget {
   final MailApi? api;
   final MailNavigation? navigation;
   final LocalUnlockController? unlockController;
-  const MailApp({super.key, this.api, this.navigation, this.unlockController});
+  final SessionVault? sessionVault;
+  final MailApi Function(String)? recoveryApiFactory;
+  const MailApp({
+    super.key,
+    this.api,
+    this.navigation,
+    this.unlockController,
+    this.sessionVault,
+    this.recoveryApiFactory,
+  });
   @override
   State<MailApp> createState() => _MailAppState();
 }
@@ -146,6 +158,8 @@ class _MailAppState extends State<MailApp> {
       api: initialApi,
       navigation: widget.navigation,
       localUnlock: unlock,
+      sessionVault: widget.sessionVault,
+      recoveryApiFactory: widget.recoveryApiFactory,
       clearTransientRoutes: sessionRoutes.clearTransientRoutes,
     ),
   );
@@ -155,19 +169,29 @@ class Mailbox extends StatefulWidget {
   final MailApi api;
   final MailNavigation? navigation;
   final LocalUnlockController? localUnlock;
+  final SessionVault? sessionVault;
+  final MailApi Function(String)? recoveryApiFactory;
   final VoidCallback? clearTransientRoutes;
   const Mailbox({
     super.key,
     required this.api,
     this.navigation,
     this.localUnlock,
+    this.sessionVault,
+    this.recoveryApiFactory,
     this.clearTransientRoutes,
   });
   @override
   MailboxState createState() => MailboxState();
 }
 
-class MailboxState extends State<Mailbox> {
+class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
+  bool _appForeground = true;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appForeground = state == AppLifecycleState.resumed;
+  }
+
   late final navigation = widget.navigation ?? MailNavigation();
   late MailRoute pendingRoute;
   bool applyingRoute = false;
@@ -175,6 +199,14 @@ class MailboxState extends State<Mailbox> {
   final deviceSettingsKey = GlobalKey<DeviceSettingsPageState>();
   final passkeySettingsKey = GlobalKey<PasskeySettingsPanelState>();
   final profileStore = ServerProfileStore();
+  late final SessionVault sessionVault =
+      widget.sessionVault ?? PlatformSessionVault();
+  VaultMetadata? savedSessionMetadata;
+  bool savedCurrentSession = false, vaultBusy = false;
+  String vaultMessage = '';
+  int vaultGeneration = 0, vaultOperation = 0;
+  bool vaultClearFailed = false;
+  Timer? sessionExpiryTimer;
   MailApi? _configuredApi;
   bool pairingOpen = false;
   int sessionGeneration = 0, loginGeneration = 0;
@@ -423,12 +455,16 @@ class MailboxState extends State<Mailbox> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.localUnlock?.addListener(unlockChanged);
     bindApiSession(widget.api);
     serverAddress.text = widget.api.base.startsWith('https://')
         ? widget.api.base
         : '';
-    if (!kIsWeb) unawaited(restoreServerProfile());
+    if (!kIsWeb) {
+      unawaited(restoreServerProfile());
+      unawaited(discoverSavedSession());
+    }
     final oauthReturned = consumeOAuthReturn();
     pendingRoute = MailRoute.parse(navigation.location);
     navigation.listen(applyBrowserRoute);
@@ -497,6 +533,10 @@ class MailboxState extends State<Mailbox> {
       (value as List? ?? []).map((e) => Map<String, dynamic>.from(e)).toList();
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    vaultGeneration++;
+    sessionExpiryTimer?.cancel();
+    unawaited(sessionVault.cancel());
     widget.localUnlock?.removeListener(unlockChanged);
     navigation.dispose();
     poll?.cancel();
@@ -526,6 +566,300 @@ class MailboxState extends State<Mailbox> {
     if (api.token == null && logged) {
       endSession(message: e.toString());
     }
+  }
+
+  Future<void> discoverSavedSession() async {
+    if (!sessionVault.supported) return;
+    final epoch = vaultGeneration;
+    final result = await sessionVault.status();
+    if (!mounted || epoch != vaultGeneration || logged || busy || pairingOpen) {
+      return;
+    }
+    setState(
+      () => savedSessionMetadata = result.state == VaultState.saved
+          ? result.metadata
+          : null,
+    );
+    if ({
+      VaultState.expired,
+      VaultState.corrupt,
+      VaultState.invalidated,
+    }.contains(result.state)) {
+      await discardSavedSession();
+    }
+  }
+
+  Future<bool> discardSavedSession() async {
+    final epoch = ++vaultGeneration;
+    final result = sessionVault.supported
+        ? await sessionVault.clear()
+        : const VaultResult(VaultState.empty);
+    if (!mounted || epoch != vaultGeneration) return false;
+    // A platform without a vault plugin may still use memory-only login.
+    // Never treat unavailable as deletion if any saved/pending record is known.
+    final cleared =
+        result.state == VaultState.empty ||
+        (result.state == VaultState.unavailable &&
+            savedSessionMetadata == null &&
+            !savedCurrentSession &&
+            !vaultBusy &&
+            !vaultClearFailed);
+    setState(() {
+      vaultClearFailed = !cleared;
+      if (cleared) {
+        savedSessionMetadata = null;
+        savedCurrentSession = false;
+      } else {
+        vaultMessage = '未能删除设备保存的登录，请重试。不要将此设备交给他人；也可在网页撤销该设备会话。';
+        error = vaultMessage;
+      }
+    });
+    return cleared;
+  }
+
+  String vaultStatusMessage(VaultState state) => switch (state) {
+    VaultState.saved => '本次登录已加密保存。重启后需系统验证，原到期时间不变。',
+    VaultState.canceled => '已取消系统验证，设置未开启。',
+    VaultState.unavailable => '安全恢复需要 Android 11 或更新版本及可用的系统锁屏验证。',
+    VaultState.lockedOut => '系统验证暂时锁定，请稍后再试。',
+    VaultState.expired => '原登录已到期，请重新登录。',
+    VaultState.invalidated => '设备安全密钥已失效，请重新登录并手动开启安全保存。',
+    VaultState.corrupt || VaultState.mismatch => '保存的登录不可用，已停止恢复。请重新登录。',
+    _ => '操作未完成，请重试。',
+  };
+
+  Future<void> setSavedSession(bool enabled) async {
+    if (!_appForeground ||
+        vaultBusy ||
+        (widget.localUnlock?.busy ?? false) ||
+        !logged ||
+        api.token == null) {
+      return;
+    }
+    final operation = ++vaultOperation;
+    if (!enabled) {
+      setState(() => vaultBusy = true);
+      final cleared = await discardSavedSession();
+      if (mounted && operation == vaultOperation) {
+        setState(() {
+          vaultBusy = false;
+          if (cleared) vaultMessage = '已删除此设备保存的登录。当前内存会话仍有效。';
+        });
+      }
+      return;
+    }
+    final token = api.token!;
+    final expiry = api.sessionExpiresAt;
+    final owner = api.sessionAccount;
+    if (expiry == null ||
+        owner == null ||
+        !expiry.isAfter(DateTime.now().toUtc())) {
+      setState(() => vaultMessage = '当前会话缺少有效的原到期信息，请重新登录后开启。');
+      return;
+    }
+    final epoch = ++vaultGeneration;
+    final source = api;
+    widget.localUnlock?.setExternalAuthenticationBusy(true);
+    setState(() {
+      vaultBusy = true;
+      vaultMessage = '';
+    });
+    try {
+      final result = await sessionVault.save(
+        SavedSession(
+          token: token,
+          profile: ServerProfile.parse(source.base),
+          accountId: owner,
+          expiresAt: expiry,
+        ),
+        explicitOptIn: true,
+      );
+      if (!mounted ||
+          epoch != vaultGeneration ||
+          !logged ||
+          !identical(api, source) ||
+          api.token != token) {
+        return;
+      }
+      setState(() {
+        savedCurrentSession = result.state == VaultState.saved;
+        savedSessionMetadata = savedCurrentSession ? result.metadata : null;
+        vaultMessage = vaultStatusMessage(result.state);
+      });
+    } catch (_) {
+      if (mounted && epoch == vaultGeneration) {
+        setState(() => vaultMessage = '安全保存未完成，请重试。');
+      }
+    } finally {
+      widget.localUnlock?.setExternalAuthenticationBusy(false);
+      if (mounted && operation == vaultOperation) {
+        setState(() => vaultBusy = false);
+      }
+    }
+  }
+
+  Future<void> restoreSavedSession() async {
+    final metadata = savedSessionMetadata;
+    if (metadata == null ||
+        busy ||
+        vaultBusy ||
+        vaultClearFailed ||
+        logged ||
+        pairingOpen ||
+        (widget.localUnlock?.busy ?? false)) {
+      return;
+    }
+    final operation = ++vaultOperation;
+    final epoch = ++vaultGeneration;
+    widget.localUnlock?.setExternalAuthenticationBusy(true);
+    setState(() {
+      busy = true;
+      vaultBusy = true;
+      error = '';
+    });
+    MailApi? candidate;
+    try {
+      final result = await sessionVault.restore(
+        profile: metadata.profile,
+        accountId: metadata.accountId,
+      );
+      if (!mounted || epoch != vaultGeneration || logged || pairingOpen) return;
+      final session = result.session;
+      if (result.state != VaultState.restored || session == null) {
+        if ({
+          VaultState.expired,
+          VaultState.corrupt,
+          VaultState.invalidated,
+          VaultState.mismatch,
+        }.contains(result.state)) {
+          await discardSavedSession();
+        }
+        if (mounted && !vaultClearFailed) {
+          setState(() => error = vaultStatusMessage(result.state));
+        }
+        return;
+      }
+      candidate =
+          widget.recoveryApiFactory?.call(session.profile.apiBase) ??
+          MailApi(base: session.profile.apiBase);
+      candidate.token = session.token;
+      candidate.sessionExpiresAt = session.expiresAt;
+      candidate.sessionAccount = session.accountId;
+      // Validate with the bound origin BEFORE exposing any authenticated UI.
+      await candidate.request('GET', '/accounts');
+      if (!mounted || epoch != vaultGeneration || logged || pairingOpen) return;
+      if (!_appForeground) {
+        setState(() => error = '请返回应用后重新验证恢复登录。');
+        return;
+      }
+      if (!session.expiresAt.isAfter(DateTime.now().toUtc())) {
+        await discardSavedSession();
+        if (mounted && !vaultClearFailed) {
+          setState(() => error = '原登录已到期，请重新登录。');
+        }
+        return;
+      }
+      _configuredApi?.dispose();
+      widget.api.token = null;
+      _configuredApi = candidate;
+      bindApiSession(candidate);
+      candidate = null;
+      serverAddress.text = session.profile.apiBase;
+      username.text = session.accountId;
+      password.clear();
+      savedCurrentSession = true;
+      await resumeAuthenticatedSession();
+    } on ApiException catch (e) {
+      if (!mounted || epoch != vaultGeneration) return;
+      if (candidate?.token == null || e.code == 'UNAUTHORIZED') {
+        await discardSavedSession();
+      }
+      if (mounted && !vaultClearFailed) {
+        setState(() => error = '恢复尚未完成：${e.message}');
+      }
+    } catch (_) {
+      if (mounted && epoch == vaultGeneration) {
+        setState(() => error = '安全恢复未完成，请重试或重新登录。');
+      }
+    } finally {
+      widget.localUnlock?.setExternalAuthenticationBusy(false);
+      candidate?.dispose();
+      if (mounted && operation == vaultOperation) {
+        setState(() {
+          busy = false;
+          vaultBusy = false;
+        });
+      }
+    }
+  }
+
+  Widget savedSessionCard() {
+    final metadata = savedSessionMetadata!;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('恢复已安全保存的登录'),
+            Text('${metadata.accountId} · ${metadata.profile.origin}'),
+            Text(
+              '原到期时间：${metadata.expiresAt.toLocal().toString().split('.').first}',
+            ),
+            FilledButton.icon(
+              key: const Key('restore-saved-session'),
+              onPressed: busy || vaultClearFailed ? null : restoreSavedSession,
+              icon: const Icon(Icons.fingerprint),
+              label: const Text('系统验证后恢复'),
+            ),
+            TextButton(
+              onPressed: busy
+                  ? null
+                  : () async {
+                      await discardSavedSession();
+                      if (mounted) setState(() {});
+                    },
+              child: const Text('删除保存的登录'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget? deviceSecuritySettings() {
+    final controller = widget.localUnlock;
+    if (!(controller?.supported ?? false) && !sessionVault.supported) {
+      return null;
+    }
+    return DeviceSecurityCard(
+      lockSupported: controller?.supported ?? false,
+      lockEnabled: controller?.enabled ?? false,
+      storageSupported: sessionVault.supported,
+      storageEnabled: savedCurrentSession,
+      busy:
+          vaultBusy || (controller?.busy ?? false) || loading || applyingRoute,
+      expiresAt: api.sessionExpiresAt,
+      message: vaultMessage,
+      onStorageChanged: (value) => unawaited(setSavedSession(value)),
+      onLockChanged: (value) async {
+        if (controller == null || vaultBusy || controller.busy || !logged) {
+          return;
+        }
+        if (value) {
+          await controller.enable();
+        } else {
+          controller.disable();
+        }
+        if (mounted) {
+          setState(
+            () => vaultMessage =
+                controller.message ??
+                (controller.enabled ? '本机会话锁已开启。' : '本机会话锁已关闭。'),
+          );
+        }
+      },
+    );
   }
 
   Future<void> restoreServerProfile() async {
@@ -575,18 +909,36 @@ class MailboxState extends State<Mailbox> {
     }
   }
 
-  void acceptPasskeySession(MailApi candidate, PasskeySession session) {
+  Future<void> acceptPasskeySession(
+    MailApi candidate,
+    PasskeySession session,
+  ) async {
     if (!mounted || logged || pairingOpen || !identical(api, candidate)) return;
+    final operation = ++vaultOperation;
+    final serverIntent = serverAddress.text;
+    if (!await discardSavedSession() ||
+        operation != vaultOperation ||
+        serverAddress.text != serverIntent ||
+        !mounted ||
+        logged ||
+        pairingOpen ||
+        !identical(api, candidate)) {
+      return;
+    }
     candidate.token = session.accessToken;
+    candidate.sessionExpiresAt = session.expiresAt;
+    candidate.sessionAccount = session.accountName;
     username.text = session.accountName;
     password.clear();
     unawaited(resumeAuthenticatedSession().catchError(fail));
   }
 
   Future<void> login() async {
-    if (busy) return;
+    if (busy || (widget.localUnlock?.busy ?? false)) return;
+    vaultOperation++;
     setState(() => busy = true);
     try {
+      if (!await discardSavedSession()) return;
       await prepareLoginApi();
       await api.login(username.text.trim(), password.text);
       password.clear();
@@ -601,6 +953,18 @@ class MailboxState extends State<Mailbox> {
   Future<void> resumeAuthenticatedSession() async {
     if (!mounted || api.token == null) return;
     final session = ++sessionGeneration;
+    sessionExpiryTimer?.cancel();
+    final expiry = api.sessionExpiresAt;
+    if (expiry != null) {
+      final remaining = expiry.difference(DateTime.now().toUtc());
+      if (remaining <= Duration.zero) {
+        endSession(message: '本次登录已到期，请重新登录');
+        return;
+      }
+      sessionExpiryTimer = Timer(remaining, () {
+        if (mounted && logged) endSession(message: '本次登录已到期，请重新登录');
+      });
+    }
     loginGeneration++;
     unawaited(rememberServerProfile());
     widget.localUnlock?.attachSession(Object());
@@ -634,9 +998,18 @@ class MailboxState extends State<Mailbox> {
       result.api.dispose();
       return;
     }
+    vaultOperation++;
+    final cleared = await discardSavedSession();
+    if (!cleared || !mounted || !pairingOpen || logged) {
+      result.api.dispose();
+      return;
+    }
     _configuredApi?.dispose();
     widget.api.token = null;
     _configuredApi = result.api;
+    result.api.sessionExpiresAt = result.expiresAt;
+    result.api.sessionAccount = result.accountName;
+    result.api.sessionDeviceId = result.deviceId;
     bindApiSession(result.api);
     serverAddress.text = profile.apiBase;
     username.text = result.accountName;
@@ -1052,6 +1425,11 @@ class MailboxState extends State<Mailbox> {
   }
 
   void endSession({String message = ''}) {
+    vaultOperation++;
+    busy = false;
+    vaultBusy = false;
+    sessionExpiryTimer?.cancel();
+    unawaited(discardSavedSession());
     sessionGeneration++;
     loginGeneration++;
     _composeDialogIdentity = null;
@@ -1209,6 +1587,8 @@ class MailboxState extends State<Mailbox> {
                                                   publishRoute();
                                                 },
                                                 api: api,
+                                                deviceSecurity:
+                                                    deviceSecuritySettings(),
                                                 caps: caps ?? {},
                                                 initialAccounts: accounts,
                                                 onAccountsChanged:
@@ -1246,124 +1626,115 @@ class MailboxState extends State<Mailbox> {
   }
 
   Widget loginView() => Scaffold(
-    body: Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 410),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Icon(
-                Icons.mark_email_unread_rounded,
-                size: 44,
-                color: blue,
-              ),
-              const SizedBox(height: 24),
-              const Text(
-                '泊信',
-                style: TextStyle(
-                  fontSize: 36,
-                  fontWeight: FontWeight.w700,
-                  color: ink,
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                '你的邮箱，一个安静的地方。',
-                style: TextStyle(fontSize: 17, color: muted),
-              ),
-              const SizedBox(height: 36),
-              const Text(
-                '登录你的私人邮件服务器',
-                style: TextStyle(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: username,
-                autofillHints: const [AutofillHints.username],
-                decoration: const InputDecoration(labelText: '用户名'),
-                onSubmitted: (_) => login(),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: password,
-                obscureText: true,
-                autofillHints: const [AutofillHints.password],
-                decoration: const InputDecoration(labelText: '密码'),
-                onSubmitted: (_) => login(),
-              ),
-              if (!kIsWeb) ...[
-                const SizedBox(height: 12),
-                TextField(
-                  key: const Key('server-address'),
-                  controller: serverAddress,
-                  enabled: !busy,
-                  keyboardType: TextInputType.url,
-                  autocorrect: false,
-                  onChanged: (_) => setState(() {}),
-                  decoration: const InputDecoration(
-                    labelText: '服务器 URL',
-                    hintText: 'https://mail.example.com/api/v1',
-                  ),
-                ),
-                const SizedBox(height: 12),
-              ],
-              if (error.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: Text(error, style: const TextStyle(color: Colors.red)),
-                ),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                height: 48,
-                child: FilledButton(
-                  onPressed: busy ? null : login,
-                  child: Text(busy ? '正在连接…' : '登录'),
-                ),
-              ),
-              const SizedBox(height: 12),
-              PasskeyLoginButton(
-                acquireApi: prepareLoginApi,
-                enabled: !busy,
-                contextKey: serverAddress.text,
-                isCurrent: () => mounted && !logged && !pairingOpen,
-                onBusyChanged: (value) {
-                  if (mounted) setState(() => busy = value);
-                },
-                onAuthenticated: acceptPasskeySession,
-              ),
-              if (!kIsWeb) ...[
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    key: const Key('pair-device'),
-                    onPressed: busy
-                        ? null
-                        : () => setState(() {
-                            password.clear();
-                            error = '';
-                            pairingOpen = true;
-                          }),
-                    icon: const Icon(Icons.qr_code_scanner),
-                    label: const Text('扫描网页二维码，配置并登录'),
-                  ),
-                ),
-              ],
-              if (kIsWeb) ...[
-                const SizedBox(height: 16),
-                AndroidDownloadCard(client: api.client),
-              ],
-              const SizedBox(height: 24),
-              const Text(
-                '连接由你掌控的服务器。登录凭证仅保存在本次会话内；刷新或关闭后需重新登录。',
-                style: TextStyle(fontSize: 12, color: muted, height: 1.6),
-              ),
-            ],
+    body: ResponsiveLoginLayout(
+      download: kIsWeb ? AndroidDownloadCard(client: api.client) : null,
+      login: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.mark_email_unread_rounded, size: 44, color: blue),
+          const SizedBox(height: 24),
+          const Text(
+            '泊信',
+            style: TextStyle(
+              fontSize: 36,
+              fontWeight: FontWeight.w700,
+              color: ink,
+            ),
           ),
-        ),
+          const SizedBox(height: 8),
+          const Text(
+            '你的邮箱，一个安静的地方。',
+            style: TextStyle(fontSize: 17, color: muted),
+          ),
+          const SizedBox(height: 36),
+          if (savedSessionMetadata != null && sessionVault.supported)
+            savedSessionCard(),
+          const Text(
+            '登录你的私人邮件服务器',
+            style: TextStyle(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: username,
+            autofillHints: const [AutofillHints.username],
+            decoration: const InputDecoration(labelText: '用户名'),
+            onSubmitted: (_) => login(),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: password,
+            obscureText: true,
+            autofillHints: const [AutofillHints.password],
+            decoration: const InputDecoration(labelText: '密码'),
+            onSubmitted: (_) => login(),
+          ),
+          if (!kIsWeb) ...[
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('server-address'),
+              controller: serverAddress,
+              enabled: !busy,
+              keyboardType: TextInputType.url,
+              autocorrect: false,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                labelText: '服务器 URL',
+                hintText: 'https://mail.example.com/api/v1',
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (error.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Text(error, style: const TextStyle(color: Colors.red)),
+            ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: FilledButton(
+              onPressed: busy ? null : login,
+              child: Text(busy ? '正在连接…' : '登录'),
+            ),
+          ),
+          const SizedBox(height: 12),
+          PasskeyLoginButton(
+            acquireApi: prepareLoginApi,
+            enabled: !busy,
+            contextKey: serverAddress.text,
+            isCurrent: () => mounted && !logged && !pairingOpen,
+            onBusyChanged: (value) {
+              if (mounted) setState(() => busy = value);
+            },
+            onAuthenticated: acceptPasskeySession,
+          ),
+          if (!kIsWeb) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                key: const Key('pair-device'),
+                onPressed: busy
+                    ? null
+                    : () => setState(() {
+                        password.clear();
+                        error = '';
+                        pairingOpen = true;
+                      }),
+                icon: const Icon(Icons.qr_code_scanner),
+                label: const Text('扫描网页二维码，配置并登录'),
+              ),
+            ),
+          ],
+          const SizedBox(height: 24),
+          const Text(
+            kIsWeb
+                ? '连接由你掌控的服务器。网页登录凭证仅保存在本次会话内；刷新或关闭后需重新登录。'
+                : '默认仅在内存中保持登录。登录后可在“账户与设置 → 设备安全与登录”明确开启安全保存；只恢复未到期的原会话。',
+            style: TextStyle(fontSize: 12, color: muted, height: 1.6),
+          ),
+        ],
       ),
     ),
   );
@@ -1707,9 +2078,10 @@ class MailboxState extends State<Mailbox> {
             key: const Key('local-session-lock'),
             tooltip: widget.localUnlock!.enabled
                 ? '锁定本次会话'
-                : '启用指纹 / Windows Hello 本机锁',
+                : '设备安全设置（指纹 / 系统验证）',
             onPressed:
-                widget.localUnlock!.busy ||
+                vaultBusy ||
+                    widget.localUnlock!.busy ||
                     (!widget.localUnlock!.enabled && (loading || applyingRoute))
                 ? null
                 : () async {
@@ -1717,12 +2089,7 @@ class MailboxState extends State<Mailbox> {
                     if (controller.enabled) {
                       controller.lock();
                     } else {
-                      await controller.enable();
-                      if (mounted &&
-                          (controller.message?.isNotEmpty ?? false) &&
-                          !controller.locked) {
-                        notify(controller.message!);
-                      }
+                      await settings();
                     }
                   },
             icon: const Icon(Icons.lock_outline, size: 22),
@@ -1732,7 +2099,7 @@ class MailboxState extends State<Mailbox> {
           IconButton(
             key: const Key('disable-local-session-lock'),
             tooltip: '关闭本次会话的本机锁',
-            onPressed: widget.localUnlock!.busy
+            onPressed: vaultBusy || widget.localUnlock!.busy
                 ? null
                 : () async {
                     final controller = widget.localUnlock!;

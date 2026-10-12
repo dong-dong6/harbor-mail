@@ -22,7 +22,11 @@ import org.springframework.test.context.DynamicPropertySource;
 class AndroidDownloadsHttpTest {
   @TestConfiguration
   static class FixtureConfiguration {
-    @Bean @Primary AndroidDownloads fixtureDownloads() throws Exception { return AndroidDownloadsTest.fixture(); }
+    @Bean @Primary AndroidDownloads fixtureDownloads() throws Exception {
+      var metadata = AndroidDownloadsTest.metadata();
+      metadata.put("releaseNotes", "更新说明\n- 保留设置。\n<script>plain text</script>");
+      return AndroidDownloadsTest.downloads(metadata, AndroidDownloadsTest.APK);
+    }
   }
   @DynamicPropertySource static void database(DynamicPropertyRegistry registry) {
     TestDatabases.configure(registry, "android_downloads");
@@ -43,6 +47,8 @@ class AndroidDownloadsHttpTest {
     assertEquals("no-store", header(response, "Cache-Control"));
     var manifest = Json.decode(new String(response.body(), java.nio.charset.StandardCharsets.UTF_8));
     assertEquals(true, manifest.get("available"));
+    assertEquals(1, manifest.get("schemaVersion"));
+    assertEquals("更新说明\n- 保留设置。\n<script>plain text</script>", manifest.get("releaseNotes"));
     var apk = request("GET", (String) manifest.get("downloadPath"));
     assertEquals(200, apk.statusCode());
     assertArrayEquals(AndroidDownloadsTest.APK, apk.body());

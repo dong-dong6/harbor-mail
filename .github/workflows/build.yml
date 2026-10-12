@@ -46,6 +46,11 @@ jobs:
           # Discard only this job's downloaded SDK archive before native build/artifact copies.
           rm -f "$RUNNER_TEMP/flutter.tar.xz"
           echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: Test native session and installer policies with synthetic fixtures
+        run: |
+          bash client/android/tests/run-session-vault-tests.sh
+          bash client/android/tests/run-policy-tests.sh
+          python3 scripts/test-prepare-android-download.py
       - name: Build this checkout using the runner's preinstalled Android SDK
         # Fails closed if a required SDK component/license is absent; never accepts licenses.
         # Ephemeral default debug signing only. No production keystore or persistent key cache.

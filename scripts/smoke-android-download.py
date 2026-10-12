@@ -14,12 +14,17 @@ base = args.url.rstrip('/')
 # CI supplies the trusted local demo origin, never a metadata-provided origin.
 with urllib.request.urlopen(base + '/downloads/android/manifest.json', timeout=15) as response:
     assert response.status == 200
-    manifest = json.loads(response.read(16 * 1024 + 1))
+    data = response.read(64 * 1024 + 1)
+    assert len(data) <= 64 * 1024
+    manifest = json.loads(data)
 assert manifest['available'] is True
 assert manifest['sourceCommit'] == args.source_commit
 assert manifest['downloadPath'] == '/downloads/android/app.apk'
 assert manifest['packageName'] == 'dev.harbor.harbor_mail.dev'
 assert manifest['signing']['classification'] == 'development-debug'
+if 'releaseNotes' in manifest:
+    assert isinstance(manifest['releaseNotes'], str)
+    assert len(manifest['releaseNotes']) <= 4000
 with urllib.request.urlopen(base + '/downloads/android/app.apk', timeout=30) as response:
     assert response.status == 200
     assert response.headers.get('Content-Type') == 'application/vnd.android.package-archive'

@@ -50,6 +50,36 @@ class AndroidDownloadsTest {
     assertEquals(APK.length, downloads.size());
     assertEquals(metadata().get("sha256"), downloads.manifest().get("sha256"));
     assertEquals("development-debug", ((Map<?, ?>) downloads.manifest().get("signing")).get("classification"));
+    assertEquals(1, downloads.manifest().get("schemaVersion"));
+    assertFalse(downloads.manifest().containsKey("releaseNotes"));
+  }
+
+  @Test void optionalReleaseNotesPreservePlainTextIncludingUnicodeBoundary() throws Exception {
+    for (String notes : new String[]{"", "更新说明\n- 保留设置。\n<script>plain text</script>\n", "📨".repeat(4000)}) {
+      var manifest = metadata();
+      manifest.put("releaseNotes", notes);
+      var downloads = downloads(manifest, APK);
+      assertTrue(downloads.available());
+      assertEquals(1, downloads.manifest().get("schemaVersion"));
+      assertEquals(notes, downloads.manifest().get("releaseNotes"));
+      assertEquals(metadata().get("sha256"), downloads.manifest().get("sha256"));
+    }
+  }
+
+  @Test void invalidReleaseNotesFailClosedWithoutLeakingMetadata() throws Exception {
+    for (Object notes : new Object[]{null, 42, true, Map.of("text", "notes"), java.util.List.of("notes"),
+        "x".repeat(4001), "📨".repeat(4001)}) {
+      var manifest = metadata();
+      manifest.put("releaseNotes", notes);
+      var downloads = downloads(manifest, APK);
+      assertFalse(downloads.available());
+      assertNull(downloads.apk());
+      assertEquals(Map.of("schemaVersion", 1, "available", false, "reason", "INVALID_ARTIFACT"), downloads.manifest());
+    }
+    var extraField = metadata();
+    extraField.put("releaseNotes", "Verified notes");
+    extraField.put("other", "untrusted");
+    assertFalse(downloads(extraField, APK).available());
   }
 
   @Test void rejectsMismatchOversizeMetadataAndUntrustedFields() throws Exception {

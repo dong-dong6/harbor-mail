@@ -28,9 +28,13 @@ on the isolated CI runner. No production signing key is created, uploaded, cache
 The existing release Gradle configuration also uses debug signing and is **not** a production
 release signing configuration. This workflow deliberately invokes `flutter build apk --debug`.
 
-Each CI run can have a different debug certificate. Android may therefore reject updating an
-older test build in place. Uninstalling that old development app clears its local app data;
-reinstall and pair it again. Do not use this debug build for production mail or real accounts.
+An in-place Android update must keep the same package name and signing certificate and use a
+higher `versionCode`. That update preserves the app's local data and settings; existing
+in-memory sessions still expire and are not made persistent by an update. Each isolated CI
+run can have a different debug certificate, so the current ephemeral debug signing blocks
+cross-build upgrades when certificates differ. Keep the installed app and its data if a build
+is incompatible. Do not uninstall as an update workaround: uninstalling clears local app data.
+Do not use this debug build for production mail or real accounts.
 A future production build needs an approved existing signing-key setup, stable application ID,
 release-signing configuration, update policy, and a separately reviewed manifest classification.
 
@@ -78,6 +82,20 @@ The generated manifest includes schema version, availability, exact download pat
 actual package/version/code, file byte length, file SHA-256, source commit, signing classification
 and certificate SHA-256. The public key fingerprint is metadata, not a signing secret.
 
+`schemaVersion` remains **1**. `releaseNotes` is an optional plain-text string, at most 4,000
+Unicode code points; old manifests that omit it remain valid. Empty strings are allowed;
+`null`, non-string values and longer notes invalidate the artifact. Notes are displayed as
+text, never rendered as HTML or Markdown. The manifest is bounded to 64 KiB, including JSON
+encoding, so multi-byte text and escaped characters fit without unbounded parsing.
+
+The publisher passes the checked-in UTF-8 `docs/ANDROID_RELEASE_NOTES.txt` through
+`--release-notes-file` to `prepare-android-download.py`. The option is optional for other
+callers. Invalid UTF-8, oversized notes or a missing supplied file fail before publishing an
+artifact. Keep the notes accurate for the version being built; this file does not change
+`versionName`/`versionCode` or announce that a newer release exists. The current notes describe
+the current source version features. The server validates and preserves this field in its public
+response, rather than dropping it when reconstructing verified metadata.
+
 Artifacts are private classpath resources at `META-INF/android-download/{manifest.json,app.apk}`.
 They are excluded from Git; no placeholder APK is checked in. Prepare them **offline before
 packaging**, never against a running server's exploded classpath. The server validates bounded
@@ -104,6 +122,26 @@ unsupported-method variants do not expose the artifact. No request input becomes
 This APK is Android-only, not an iPhone installer. Hosting must expose the same-origin download
 paths along with the JAR's website. There is no third-party APK redirect or arbitrary URL from
 manifest metadata. Deploy the Web client and its APK in the same integrated build.
+
+## Updating without losing settings
+
+The Android app can check this server's manifest for a newer `versionCode` and show the
+available release notes before the user chooses to download. Checking does not install an
+update. The downloaded APK must match the advertised byte count, SHA-256, package, version
+and signing certificate, and the certificate must also match the installed app. A mismatch
+stops the update without changing local settings or attempting to replace the app.
+
+Installation remains an explicit Android system installer action. If Android asks to allow
+installation from Harbor Mail, the user controls that permission and returns to retry; an
+opened installer is not proof that installation succeeded. Canceling leaves the current app
+and its data intact. Normal same-package, same-certificate, higher-version-code installation
+keeps local app data. Server-side accounts and settings are not deleted by checking for or
+canceling an update. Android may still require login again because sessions are in memory.
+
+With today's ephemeral CI debug certificate, a newer downloadable build may be incompatible
+with the installed build. The safe next step is to obtain a build signed with the existing
+certificate. Persistent production signing needs a separately approved setup; this feature
+does not create keys, change signing, increase the version, or bypass Android's checks.
 
 ## Local checks
 

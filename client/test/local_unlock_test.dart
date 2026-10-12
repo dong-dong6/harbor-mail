@@ -212,6 +212,115 @@ void main() {
       expect(auth.checks + auth.prompts, 0);
     });
 
+    test('login and lifecycle changes alone never opt in or prompt', () async {
+      controller.attachSession(Object());
+      controller.handleLifecycleState(AppLifecycleState.inactive);
+      controller.handleLifecycleState(AppLifecycleState.paused);
+      controller.handleLifecycleState(AppLifecycleState.resumed);
+      expect(controller.enabled, isFalse);
+      expect(controller.locked, isFalse);
+      expect(auth.checks + auth.prompts, 0);
+    });
+
+    test(
+      'external OS verification blocks first setup until explicitly cleared',
+      () async {
+        controller.attachSession(Object());
+        controller.setExternalAuthenticationBusy(true);
+        expect(controller.busy, isTrue);
+        expect(await controller.enable(), isFalse);
+        expect(await controller.unlock(), isFalse);
+        expect(controller.disable(), isFalse);
+        expect(auth.checks + auth.prompts, 0);
+        controller.setExternalAuthenticationBusy(false);
+        expect(controller.busy, isFalse);
+        expect(controller.enabled, isFalse);
+        expect(await controller.enable(), isTrue);
+      },
+    );
+
+    test(
+      'external verification never unlocks an enabled session on resume',
+      () async {
+        controller.attachSession(Object());
+        await controller.enable();
+        controller.setExternalAuthenticationBusy(true);
+        controller.handleLifecycleState(AppLifecycleState.inactive);
+        expect(controller.locked, isTrue);
+        expect(await controller.unlock(), isFalse);
+        controller.setExternalAuthenticationBusy(false);
+        controller.handleLifecycleState(AppLifecycleState.resumed);
+        expect(controller.locked, isTrue);
+        expect(controller.enabled, isTrue);
+        expect(auth.prompts, 1);
+        expect(await controller.unlock(), isTrue);
+        expect(auth.prompts, 2);
+      },
+    );
+
+    test(
+      'external verification invalidates a prior local resume grant',
+      () async {
+        controller.attachSession(Object());
+        auth.pending = Completer<LocalUnlockResult>();
+        final attempt = controller.enable();
+        await Future<void>.delayed(Duration.zero);
+        controller.handleLifecycleState(AppLifecycleState.inactive);
+        auth.pending!.complete(LocalUnlockResult.verified);
+        expect(await attempt, isTrue);
+        expect(controller.locked, isTrue);
+        controller.setExternalAuthenticationBusy(true);
+        controller.setExternalAuthenticationBusy(false);
+        controller.handleLifecycleState(AppLifecycleState.resumed);
+        expect(controller.locked, isTrue);
+        expect(controller.enabled, isTrue);
+      },
+    );
+
+    for (final alreadyEnabled in [false, true]) {
+      test(
+        'external verification invalidates a pending local result (enabled=$alreadyEnabled)',
+        () async {
+          controller.attachSession(Object());
+          if (alreadyEnabled) {
+            await controller.enable();
+            controller.lock();
+          }
+          auth.pending = Completer<LocalUnlockResult>();
+          final attempt = alreadyEnabled
+              ? controller.unlock()
+              : controller.enable();
+          await Future<void>.delayed(Duration.zero);
+          controller.setExternalAuthenticationBusy(true);
+          auth.pending!.complete(LocalUnlockResult.verified);
+          expect(await attempt, isFalse);
+          expect(controller.busy, isTrue);
+          expect(controller.enabled, alreadyEnabled);
+          expect(controller.locked, alreadyEnabled);
+          expect(auth.cancellations, 1);
+          controller.setExternalAuthenticationBusy(false);
+          await Future<void>.delayed(Duration.zero);
+          expect(controller.busy, isFalse);
+        },
+      );
+    }
+
+    test(
+      'session replacement cannot clear an externally owned prompt',
+      () async {
+        controller.attachSession(Object());
+        controller.setExternalAuthenticationBusy(true);
+        controller.attachSession(Object());
+        expect(controller.busy, isTrue);
+        expect(await controller.enable(), isFalse);
+        controller.setExternalAuthenticationBusy(false);
+        expect(controller.busy, isFalse);
+        expect(controller.enabled, isFalse);
+        expect(controller.locked, isFalse);
+        expect(auth.prompts, 0);
+      },
+    );
+
     test(
       'unsupported or unconfigured device keeps explicit login available',
       () async {
@@ -248,10 +357,25 @@ void main() {
     for (final result in LocalUnlockResult.values.where(
       (result) => result != LocalUnlockResult.verified,
     )) {
-      test('failed opt-in ($result) keeps current session shielded', () async {
+      test('failed first setup ($result) leaves local lock disabled', () async {
         controller.attachSession(Object());
         auth.result = result;
         expect(await controller.enable(), isFalse);
+        expect(controller.enabled, isFalse);
+        expect(controller.locked, isFalse);
+        expect(controller.message, contains('未开启'));
+        expect(await controller.unlock(), isFalse);
+        auth.result = LocalUnlockResult.verified;
+        expect(await controller.enable(), isTrue);
+        expect(controller.enabled, isTrue);
+      });
+
+      test('failed existing-session unlock ($result) stays locked', () async {
+        controller.attachSession(Object());
+        expect(await controller.enable(), isTrue);
+        controller.lock();
+        auth.result = result;
+        expect(await controller.unlock(), isFalse);
         expect(controller.enabled, isTrue);
         expect(controller.locked, isTrue);
         expect(controller.message, isNotEmpty);
@@ -266,6 +390,7 @@ void main() {
       auth.pending = Completer<LocalUnlockResult>();
       final enable = controller.enable();
       await Future<void>.delayed(Duration.zero);
+      expect(controller.enabled, isFalse);
       expect(controller.locked, isTrue);
       expect(controller.busy, isTrue);
       expect(await controller.enable(), isFalse);
@@ -312,6 +437,24 @@ void main() {
       AppLifecycleState.detached,
     ]) {
       test(
+        '$background cancels first setup without enabling local lock',
+        () async {
+          controller.attachSession(Object());
+          auth.pending = Completer<LocalUnlockResult>();
+          final attempt = controller.enable();
+          await Future<void>.delayed(Duration.zero);
+          controller.handleLifecycleState(background);
+          controller.handleLifecycleState(AppLifecycleState.resumed);
+          auth.pending!.complete(LocalUnlockResult.verified);
+          expect(await attempt, isFalse);
+          expect(controller.enabled, isFalse);
+          expect(controller.locked, isFalse);
+          expect(auth.cancellations, 1);
+          expect(auth.prompts, 1);
+        },
+      );
+
+      test(
         '$background invalidates late native success and does not auto-retry',
         () async {
           controller.attachSession(Object());
@@ -328,6 +471,21 @@ void main() {
           expect(auth.prompts, 2);
         },
       );
+    }
+
+    for (final replacement in [null, Object()]) {
+      test('session replacement cannot finish first setup', () async {
+        controller.attachSession(Object());
+        auth.pending = Completer<LocalUnlockResult>();
+        final attempt = controller.enable();
+        await Future<void>.delayed(Duration.zero);
+        controller.attachSession(replacement);
+        auth.pending!.complete(LocalUnlockResult.verified);
+        expect(await attempt, isFalse);
+        expect(controller.enabled, isFalse);
+        expect(controller.locked, isFalse);
+        expect(auth.cancellations, 1);
+      });
     }
 
     test('real background discards verified-but-not-resumed grant', () async {
@@ -419,14 +577,29 @@ void main() {
       },
     );
 
-    test('unexpected injected error fails closed', () async {
+    test('unexpected first-setup error leaves feature disabled', () async {
       controller.attachSession(Object());
       auth.failure = StateError('synthetic error');
       expect(await controller.enable(), isFalse);
-      expect(controller.locked, isTrue);
+      expect(controller.enabled, isFalse);
+      expect(controller.locked, isFalse);
       expect(controller.busy, isFalse);
       expect(controller.message, contains('系统验证未完成'));
     });
+
+    test(
+      'unexpected error unlocking an enabled session fails closed',
+      () async {
+        controller.attachSession(Object());
+        await controller.enable();
+        controller.lock();
+        auth.failure = StateError('synthetic error');
+        expect(await controller.unlock(), isFalse);
+        expect(controller.enabled, isTrue);
+        expect(controller.locked, isTrue);
+        expect(controller.busy, isFalse);
+      },
+    );
 
     test(
       'same session attachment preserves lock and opt-in; logout clears both',
@@ -443,6 +616,79 @@ void main() {
         expect(controller.locked, isFalse);
       },
     );
+  });
+
+  testWidgets(
+    'gate disables local-auth retry during external OS verification',
+    (tester) async {
+      final auth = FakeUnlockAuthenticator();
+      final controller = LocalUnlockController(authenticator: auth)
+        ..attachSession(Object());
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (_, navigator) => LocalUnlockGate(
+            controller: controller,
+            onSignOut: () {},
+            child: navigator!,
+          ),
+          home: const Scaffold(body: Text('Private content')),
+        ),
+      );
+      await controller.enable();
+      controller.setExternalAuthenticationBusy(true);
+      controller.handleLifecycleState(AppLifecycleState.inactive);
+      await tester.pump();
+      final retry = find.byKey(const ValueKey('local-unlock-retry'));
+      expect(tester.widget<FilledButton>(retry).onPressed, isNull);
+      expect(find.text('Private content'), findsNothing);
+      await tester.tap(retry);
+      expect(auth.prompts, 1);
+      controller.setExternalAuthenticationBusy(false);
+      controller.handleLifecycleState(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(tester.widget<FilledButton>(retry).onPressed, isNotNull);
+      expect(controller.locked, isTrue);
+      expect(find.text('Private content'), findsNothing);
+      await tester.tap(retry);
+      await tester.pumpAndSettle();
+      expect(auth.prompts, 2);
+      expect(find.text('Private content'), findsOneWidget);
+    },
+  );
+
+  testWidgets('canceling first setup restores the existing editor', (
+    tester,
+  ) async {
+    final auth = FakeUnlockAuthenticator()
+      ..pending = Completer<LocalUnlockResult>();
+    final controller = LocalUnlockController(authenticator: auth)
+      ..attachSession(Object());
+    final editor = TextEditingController(text: 'Unsaved synthetic draft');
+    addTearDown(controller.dispose);
+    addTearDown(editor.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (_, navigator) => LocalUnlockGate(
+          controller: controller,
+          onSignOut: () {},
+          child: navigator!,
+        ),
+        home: Scaffold(body: TextField(controller: editor)),
+      ),
+    );
+    final attempt = controller.enable();
+    await tester.pump();
+    expect(controller.enabled, isFalse);
+    expect(find.byType(TextField), findsNothing);
+    auth.pending!.complete(LocalUnlockResult.canceled);
+    await attempt;
+    await tester.pumpAndSettle();
+    expect(controller.enabled, isFalse);
+    expect(controller.locked, isFalse);
+    expect(find.byType(TextField), findsOneWidget);
+    expect(editor.text, 'Unsaved synthetic draft');
+    expect(find.text('泊信已锁定'), findsNothing);
   });
 
   testWidgets(

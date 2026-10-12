@@ -34,6 +34,48 @@ class PrepareAndroidTests(unittest.TestCase):
             self.assertNotIn(directory, json.dumps(manifest))
             self.assertEqual('/downloads/android/app.apk', manifest['downloadPath'])
             self.assertEqual('development-debug', manifest['signing']['classification'])
+            self.assertEqual(1, manifest['schemaVersion'])
+            self.assertNotIn('releaseNotes', manifest)
+
+    def test_optional_release_notes_are_plain_text_and_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, notes = root / 'source.apk', root / 'notes.txt'
+            source.write_bytes(b'PK\x03\x04synthetic-contract-fixture-only')
+            for content in ['', '更新说明\n- 保留设置。\n<script>plain text</script>\n', '📨' * 4000]:
+                with self.subTest(length=len(content)):
+                    notes.write_text(content, encoding='utf-8')
+                    with patch.object(module, 'checked_tool', side_effect=[BADGING, CERTS]):
+                        manifest = module.prepare(source, root / 'out', Path('aapt'), Path('apksigner'),
+                                                  '0.2.3', 5, 'b' * 40, release_notes_file=notes)
+                    self.assertEqual(1, manifest['schemaVersion'])
+                    self.assertEqual(content, manifest['releaseNotes'])
+                    self.assertEqual(content, json.loads((root / 'out' / 'manifest.json').read_text(encoding='utf-8'))['releaseNotes'])
+
+    def test_invalid_release_notes_fail_before_publishing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, notes, destination = root / 'source.apk', root / 'notes.txt', root / 'out'
+            source.write_bytes(b'PK\x03\x04synthetic-contract-fixture-only')
+            for content in [b'x' * 4001, ('📨' * 4001).encode('utf-8'), b'\xffinvalid UTF-8']:
+                with self.subTest(length=len(content)):
+                    notes.write_bytes(content)
+                    with patch.object(module, 'checked_tool') as inspect, self.assertRaises(ValueError):
+                        module.prepare(source, destination, Path('aapt'), Path('apksigner'),
+                                       '0.2.3', 5, 'b' * 40, release_notes_file=notes)
+                    inspect.assert_not_called()
+                    self.assertFalse((destination / 'manifest.json').exists())
+                    self.assertFalse((destination / 'app.apk').exists())
+
+    def test_release_notes_file_must_exist_and_not_be_a_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            notes, link = root / 'notes.txt', root / 'link.txt'
+            notes.write_text('Current release', encoding='utf-8')
+            link.symlink_to(notes)
+            for candidate in [root / 'missing.txt', root, link]:
+                with self.subTest(candidate=candidate), self.assertRaises(ValueError):
+                    module.read_release_notes(candidate)
 
     def test_rejects_wrong_package_version_and_non_debug_build(self):
         for invalid in [BADGING.replace('.dev\'', '\''), BADGING.replace("versionCode='5'", "versionCode='6'"),

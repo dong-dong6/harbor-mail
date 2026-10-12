@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'api.dart';
@@ -20,7 +22,8 @@ class PasskeyLoginButton extends StatefulWidget {
   }) : assert(api != null || acquireApi != null);
   final MailApi? api;
   final Future<MailApi> Function()? acquireApi;
-  final void Function(MailApi api, PasskeySession session) onAuthenticated;
+  final FutureOr<void> Function(MailApi api, PasskeySession session)
+  onAuthenticated;
   final PasskeyAuthenticator? authenticator;
   final bool Function()? isCurrent;
   final bool enabled;
@@ -100,7 +103,7 @@ class _PasskeyLoginButtonState extends State<PasskeyLoginButton> {
         isCurrent: () => _current(generation),
       );
       if (!_current(generation)) return;
-      widget.onAuthenticated(api, result);
+      await widget.onAuthenticated(api, result);
     } catch (error) {
       if (_current(generation)) {
         setState(() => _error = passkeyErrorMessage(error));

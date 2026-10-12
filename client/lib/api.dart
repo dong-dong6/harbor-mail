@@ -15,6 +15,11 @@ class MailApi {
   final String base;
   String? _token;
 
+  /// Original absolute server expiry; never renewed by local restoration.
+  DateTime? sessionExpiresAt;
+  String? sessionAccount;
+  String? sessionDeviceId;
+
   /// The session owner can immediately retire protected UI after any current
   /// API path (including passkeys) clears its token. Never fires on a login or
   /// on a stale request rejection which leaves the current token untouched.
@@ -22,6 +27,11 @@ class MailApi {
   String? get token => _token;
   set token(String? value) {
     final wasAuthenticated = _token != null;
+    if (value != _token) {
+      sessionExpiresAt = null;
+      sessionAccount = null;
+      sessionDeviceId = null;
+    }
     _token = value;
     if (wasAuthenticated && value == null) onSessionCleared?.call();
   }
@@ -103,6 +113,10 @@ class MailApi {
       body: {'username': username, 'password': password},
     );
     token = result['accessToken'];
+    sessionExpiresAt = DateTime.tryParse(
+      result['expiresAt']?.toString() ?? '',
+    )?.toUtc();
+    sessionAccount = username;
   }
 
   Future<OAuthSettingsSnapshot> oauthSettings() async =>
