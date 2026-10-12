@@ -36,7 +36,24 @@ const server=createServer((req,res)=>{
    const page=await browser.newPage({viewport:{width,height:1100}});const errors=[],consoleLog=[],network=[];page.on('pageerror',e=>errors.push(String(e)));page.on('console',m=>consoleLog.push({type:m.type(),text:m.text()}));page.on('response',r=>network.push({url:r.url(),status:r.status()}));page.on('requestfailed',r=>network.push({url:r.url(),failure:r.failure()}));
    await page.route('**/*',r=>r.request().url().startsWith(base)||r.request().url().startsWith('data:')?r.continue():r.abort());
    const semantic=(text,prefix=false,line=false)=>page.locator('semanticValue='+JSON.stringify({text,prefix,line}));
-   const hash=route=>page.waitForFunction(value=>location.hash===value,'#'+route);
+   await page.addInitScript(()=>{window.__routeTestHistory=[];addEventListener('popstate',event=>window.__routeTestHistory.push({at:performance.now(),hash:location.hash,state:event.state,bridge:window.HarborNavigation?.status?.()}),true);});
+   const hashOnly=route=>page.waitForFunction(value=>location.hash===value,'#'+route);
+   const hash=async route=>{
+    const settled=()=>page.waitForFunction(value=>{const state=window.HarborNavigation?.status();return state?.settled&&state.location===value&&location.hash==='#'+value;},route);
+    await settled();
+    // URL traversal is asynchronous. A temporary restored hash is not an
+    // accepted route; require both bridge commitment and rendered destination.
+    if(route==='/mail')await page.getByRole('button',{name:/\bROUTE SUBJECT ONE\b/}).waitFor();
+    else if(route==='/mail/m1'||route==='/mail/m2'){
+     await semantic(route.endsWith('m1')?'ROUTE SUBJECT ONE':'ROUTE SUBJECT TWO').waitFor();
+     await page.getByRole('button',{name:'返回列表',exact:true}).waitFor();
+     await page.locator('iframe[title="邮件正文"]').waitFor();
+    } else if(route==='/mail/missing')await page.getByRole('button',{name:'加载失败，重试',exact:true}).waitFor();
+    else if(route==='/settings/accounts')await page.getByRole('button',{name:'添加邮箱',exact:true}).waitFor();
+    else if(route==='/settings/add')await semantic('授权连接',false,true).waitFor();
+    else if(route==='/settings/oauth')await semantic('演示环境 · 仅可查看配置状态。所有输入和保存均已禁用，请勿输入真实密钥。',false,true).waitFor();
+    await settled();
+   };
    const login=async()=>{const placeholder=page.locator('flt-semantics-placeholder');await Promise.race([placeholder.waitFor({state:'attached'}),page.getByRole('textbox').first().waitFor({state:'visible'})]);await page.evaluate(()=>document.querySelector('flt-semantics-placeholder')?.click());await page.getByRole('textbox').first().waitFor({state:'visible'});await page.getByRole('textbox').first().fill('owner');await page.getByRole('textbox').nth(1).fill('synthetic-only');await page.getByRole('button',{name:'登录',exact:true}).click();};
    const back=()=>page.evaluate(()=>history.back()),forward=()=>page.evaluate(()=>history.forward());
    const reveal=async locator=>{
@@ -105,8 +122,8 @@ const server=createServer((req,res)=>{
    }
    assert.equal(await iframe.evaluate(e=>e.style.pointerEvents),'auto','iframe is interactive outside dialogs');
    await reveal(page.getByRole('button',{name:'显示原邮件',exact:true}));await page.getByRole('button',{name:'显示原邮件',exact:true}).click();await page.getByRole('button',{name:'收起原邮件',exact:true}).click();
-   await back();await page.getByRole('alertdialog').waitFor();await semantic('放弃未保存的更改？',false,true).waitFor();await hash('/mail/m1');assert.equal(await iframe.evaluate(e=>e.style.pointerEvents),'none','dialog shields native HTML iframe');
-   await page.getByRole('button',{name:'继续编辑',exact:true}).click();await focusBody();assert.equal(await body.inputValue(),replyText,'cancelled in-app Back preserves controller text');
+   await back();await page.getByRole('alertdialog').waitFor();await semantic('放弃未保存的更改？',false,true).waitFor();await hashOnly('/mail/m1');assert.equal(await iframe.evaluate(e=>e.style.pointerEvents),'none','dialog shields native HTML iframe');
+   await page.getByRole('button',{name:'继续编辑',exact:true}).click();await hash('/mail/m1');await focusBody();assert.equal(await body.inputValue(),replyText,'cancelled in-app Back preserves controller text');
    await back();await page.getByRole('button',{name:'放弃更改',exact:true}).click();await hash('/mail');await forward();await hash('/mail/m1');
    console.log(`CHECK ${width}: refresh and resume`);
    await page.reload();await login();await hash('/mail/m1');await semantic('ROUTE SUBJECT ONE').waitFor();
@@ -126,7 +143,7 @@ const server=createServer((req,res)=>{
     fs.writeFileSync(path.join(out,`failure-${width}.html`),await page.content().catch(()=>''));
     fs.writeFileSync(path.join(out,`failure-${width}-aria.yml`),await page.locator('body').ariaSnapshot().catch(e=>String(e)));
     const dom=await page.evaluate(()=>{const nodes=[];const collect=root=>{nodes.push(...root.querySelectorAll('flt-semantics,[aria-label],input,textarea,iframe'));for(const el of root.querySelectorAll('*'))if(el.shadowRoot)collect(el.shadowRoot);};collect(document);return nodes.map(el=>({tag:el.tagName,role:el.getAttribute('role'),label:el.getAttribute('aria-label'),value:el.type==='password'?'[redacted]':el.value,text:el.textContent,rect:el.getBoundingClientRect().toJSON(),pointerEvents:getComputedStyle(el).pointerEvents,attributes:Object.fromEntries(Array.from(el.attributes).map(a=>[a.name,a.value]))}));}).catch(e=>String(e));
-    fs.writeFileSync(path.join(out,`failure-${width}-diagnostics.json`),JSON.stringify({url:page.url(),errors,console:consoleLog,network,dom},null,2));
+    fs.writeFileSync(path.join(out,`failure-${width}-diagnostics.json`),JSON.stringify({url:page.url(),errors,console:consoleLog,network,dom,navigation:await page.evaluate(()=>({status:window.HarborNavigation?.status?.(),historyState:history.state,trace:window.__routeTestHistory})).catch(e=>String(e))},null,2));
     throw e; } finally { await page.close(); }
   }
   console.log('PASS built Flutter routing/header/inline at desktop and mobile: deep link login, browser Back/Forward, dirty keep/discard, refresh resume, settings/add, unavailable mail, sandbox and native editable reply');
