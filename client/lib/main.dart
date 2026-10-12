@@ -1708,7 +1708,9 @@ class MailboxState extends State<Mailbox> {
             tooltip: widget.localUnlock!.enabled
                 ? '锁定本次会话'
                 : '启用指纹 / Windows Hello 本机锁',
-            onPressed: widget.localUnlock!.busy
+            onPressed:
+                widget.localUnlock!.busy ||
+                    (!widget.localUnlock!.enabled && (loading || applyingRoute))
                 ? null
                 : () async {
                     final controller = widget.localUnlock!;

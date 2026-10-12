@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -19,17 +20,24 @@ class _SyntheticUnlock implements LocalUnlockAuthenticator {
   Future<void> cancel() async {}
 }
 
-Future<({LocalUnlockController unlock, MailboxState mailbox})> _mount(
-  WidgetTester tester,
-) async {
+Future<
+  ({LocalUnlockController unlock, MailboxState mailbox, Future<void> resumed})
+>
+_mount(
+  WidgetTester tester, {
+  bool waitForResume = true,
+  Future<http.Response>? Function(http.Request)? intercept,
+}) async {
   tester.view.physicalSize = const Size(320, 800);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   final api = MailApi(
     base: 'https://mail.invalid/api/v1',
-    client: MockClient(
-      (request) async => http.Response(
+    client: MockClient((request) async {
+      final intercepted = intercept?.call(request);
+      if (intercepted != null) return intercepted;
+      return http.Response(
         jsonEncode(
           request.url.path.endsWith('/settings/capabilities')
               ? {'demoMode': true, 'features': <String, dynamic>{}}
@@ -37,20 +45,105 @@ Future<({LocalUnlockController unlock, MailboxState mailbox})> _mount(
         ),
         200,
         headers: {'content-type': 'application/json'},
-      ),
-    ),
+      );
+    }),
   )..token = 'synthetic-session';
   final unlock = LocalUnlockController(authenticator: _SyntheticUnlock());
   addTearDown(unlock.dispose);
   await tester.pumpWidget(MailApp(api: api, unlockController: unlock));
   final mailbox = tester.state<MailboxState>(find.byType(Mailbox));
   final resumed = mailbox.resumeAuthenticatedSession();
-  await tester.pumpAndSettle();
-  await resumed;
-  return (unlock: unlock, mailbox: mailbox);
+  if (waitForResume) {
+    await tester.pumpAndSettle();
+    await resumed;
+  } else {
+    await tester.pump();
+  }
+  return (unlock: unlock, mailbox: mailbox, resumed: resumed);
 }
 
 void main() {
+  testWidgets('first local-lock enable waits for login bootstrap and polling', (
+    tester,
+  ) async {
+    final pending = Completer<http.Response>();
+    var held = false;
+    final fixture = await _mount(
+      tester,
+      waitForResume: false,
+      intercept: (request) {
+        if (!held && request.url.path.endsWith('/accounts')) {
+          held = true;
+          return pending.future;
+        }
+        return null;
+      },
+    );
+    expect(fixture.mailbox.loading, isTrue);
+    expect(fixture.mailbox.applyingRoute, isTrue);
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('local-session-lock')))
+          .onPressed,
+      isNull,
+    );
+    await tester.tap(find.byKey(const Key('local-session-lock')));
+    await tester.pump();
+    expect(fixture.unlock.enabled, isFalse);
+
+    pending.complete(http.Response('{"items":[]}', 200));
+    await tester.pumpAndSettle();
+    await fixture.resumed;
+    expect(fixture.mailbox.loading, isFalse);
+    expect(fixture.mailbox.applyingRoute, isFalse);
+    expect(fixture.mailbox.poll?.isActive, isTrue);
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('local-session-lock')))
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.byKey(const Key('local-session-lock')));
+    await tester.pumpAndSettle();
+    expect(fixture.unlock.enabled, isTrue);
+    expect(fixture.mailbox.poll?.isActive, isTrue);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('enabled local lock remains manually usable during refresh IO', (
+    tester,
+  ) async {
+    Completer<http.Response>? pending;
+    final fixture = await _mount(
+      tester,
+      intercept: (request) =>
+          request.url.path.endsWith('/accounts') ? pending?.future : null,
+    );
+    await fixture.unlock.enable();
+    await tester.pumpAndSettle();
+    pending = Completer<http.Response>();
+    final refresh = fixture.mailbox.refresh();
+    await tester.pump();
+    expect(fixture.mailbox.loading, isTrue);
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('local-session-lock')))
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.byKey(const Key('local-session-lock')));
+    await tester.pumpAndSettle();
+    expect(fixture.unlock.locked, isTrue);
+    expect(find.text('泊信已锁定'), findsOneWidget);
+    pending.complete(http.Response('{"items":[]}', 200));
+    await tester.pump();
+    await refresh;
+    expect(fixture.unlock.locked, isTrue);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('local-lock disable control requires explicit confirmation', (
     tester,
   ) async {

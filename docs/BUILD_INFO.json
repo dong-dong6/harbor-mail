@@ -20,7 +20,7 @@
     "skipped": 0
   },
   "flutterAnalyze": "passed",
-  "flutterTests": 299,
+  "flutterTests": 301,
   "browserEndToEnd": "CI_pending; local Chromium blocked by OS socket restrictions",
   "nativeAndroidBuild": "CI_pending",
   "nativeWindowsBuild": "CI_pending",
@@ -30,5 +30,5 @@
   "androidSigning": "Ephemeral development debug signature; dev.harbor.harbor_mail.dev; no production key",
   "sessionBoundaryTests": 25,
   "composeSessionGuardTests": 21,
-  "localLockControlsTests": 2
+  "localLockControlsTests": 4
 }
