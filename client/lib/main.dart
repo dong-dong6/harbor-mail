@@ -205,6 +205,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
   bool savedCurrentSession = false, vaultBusy = false;
   String vaultMessage = '';
   int vaultGeneration = 0, vaultOperation = 0;
+  int vaultAuthenticationsInFlight = 0;
   bool vaultClearFailed = false;
   Timer? sessionExpiryTimer;
   MailApi? _configuredApi;
@@ -590,6 +591,12 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
   }
 
   Future<bool> discardSavedSession() async {
+    final hadVaultState =
+        savedSessionMetadata != null ||
+        savedCurrentSession ||
+        vaultAuthenticationsInFlight != 0 ||
+        vaultBusy ||
+        vaultClearFailed;
     final epoch = ++vaultGeneration;
     final result = sessionVault.supported
         ? await sessionVault.clear()
@@ -600,8 +607,10 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
     final cleared =
         result.state == VaultState.empty ||
         (result.state == VaultState.unavailable &&
+            !hadVaultState &&
             savedSessionMetadata == null &&
             !savedCurrentSession &&
+            vaultAuthenticationsInFlight == 0 &&
             !vaultBusy &&
             !vaultClearFailed);
     setState(() {
@@ -659,6 +668,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
     }
     final epoch = ++vaultGeneration;
     final source = api;
+    vaultAuthenticationsInFlight++;
     widget.localUnlock?.setExternalAuthenticationBusy(true);
     setState(() {
       vaultBusy = true;
@@ -691,6 +701,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
         setState(() => vaultMessage = '安全保存未完成，请重试。');
       }
     } finally {
+      vaultAuthenticationsInFlight--;
       widget.localUnlock?.setExternalAuthenticationBusy(false);
       if (mounted && operation == vaultOperation) {
         setState(() => vaultBusy = false);
@@ -711,6 +722,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
     }
     final operation = ++vaultOperation;
     final epoch = ++vaultGeneration;
+    vaultAuthenticationsInFlight++;
     widget.localUnlock?.setExternalAuthenticationBusy(true);
     setState(() {
       busy = true;
@@ -782,6 +794,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
         setState(() => error = '安全恢复未完成，请重试或重新登录。');
       }
     } finally {
+      vaultAuthenticationsInFlight--;
       widget.localUnlock?.setExternalAuthenticationBusy(false);
       candidate?.dispose();
       if (mounted && operation == vaultOperation) {

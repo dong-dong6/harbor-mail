@@ -274,75 +274,91 @@ class _AndroidDownloadCardState extends State<AndroidDownloadCard> {
         Text('安装并打开 App 后，扫描网页“连接设备”二维码，再在网页核对设备与验证码并批准。'),
       ],
     );
-    return Card(
-      key: const Key('android-download-card'),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '下载 Android APK',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 8),
-            if (_loading)
-              const Text('正在检查此服务器提供的 Android 构建…')
-            else if (manifest?.available != true && _error == null)
-              const Text('此服务器尚未包含已验证的 APK。构建完成并更新服务后即可下载。'),
-            if (manifest?.available == true) ...[
-              Text(
-                '版本 ${manifest!.versionName} (${manifest.versionCode}) · '
-                '${(manifest.sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB',
+    return Semantics(
+      key: const Key('android-download-semantics'),
+      container: true,
+      identifier: 'android-download-card',
+      child: Card(
+        key: const Key('android-download-card'),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Semantics(
+                key: const Key('android-download-heading-semantics'),
+                container: true,
+                header: true,
+                identifier: 'android-download-heading',
+                child: Text(
+                  '下载 Android APK',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
               ),
               const SizedBox(height: 8),
-              const Text(
-                '开发测试版 · Android 调试签名。请使用测试账号；不要用于正式邮件。',
-                key: Key('android-development-warning'),
-              ),
-              const Text(
-                '仅适用于 Android。不同 CI 构建的签名可能变化，导致无法覆盖更新。请保留现有 App 和本地数据，联系管理员确认兼容版本。',
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                key: const Key('android-download-button'),
-                onPressed: _opening ? null : _download,
-                icon: const Icon(Icons.download),
-                label: Text(_opening ? '正在打开…' : '下载测试 APK'),
-              ),
-              const SizedBox(height: 8),
-              if (compactInstructions)
-                const ExpansionTile(
-                  key: Key('android-installation-expander'),
-                  tilePadding: EdgeInsets.zero,
-                  childrenPadding: EdgeInsets.only(bottom: 12),
-                  title: Text('安装与连接说明'),
-                  children: [installationSteps],
-                )
-              else
-                installationSteps,
-              ExpansionTile(
-                tilePadding: EdgeInsets.zero,
-                title: const Text('校验文件与签名'),
-                children: [
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: SelectableText(
-                      '文件 SHA-256\n${manifest.sha256}\n\n签名证书 SHA-256\n${manifest.certificateSha256}',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
+              if (_loading)
+                const Text('正在检查此服务器提供的 Android 构建…')
+              else if (manifest?.available != true && _error == null)
+                const Text('此服务器尚未包含已验证的 APK。构建完成并更新服务后即可下载。'),
+              if (manifest?.available == true) ...[
+                Text(
+                  '版本 ${manifest!.versionName} (${manifest.versionCode}) · '
+                  '${(manifest.sizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB',
+                ),
+                const SizedBox(height: 8),
+                Semantics(
+                  key: const Key('android-development-warning-semantics'),
+                  container: true,
+                  identifier: 'android-development-warning',
+                  child: const Text(
+                    '开发测试版 · Android 调试签名。请使用测试账号；不要用于正式邮件。',
+                    key: Key('android-development-warning'),
                   ),
-                ],
-              ),
+                ),
+                const Text(
+                  '仅适用于 Android。不同 CI 构建的签名可能变化，导致无法覆盖更新。请保留现有 App 和本地数据，联系管理员确认兼容版本。',
+                ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  key: const Key('android-download-button'),
+                  onPressed: _opening ? null : _download,
+                  icon: const Icon(Icons.download),
+                  label: Text(_opening ? '正在打开…' : '下载测试 APK'),
+                ),
+                const SizedBox(height: 8),
+                if (compactInstructions)
+                  const ExpansionTile(
+                    key: Key('android-installation-expander'),
+                    tilePadding: EdgeInsets.zero,
+                    childrenPadding: EdgeInsets.only(bottom: 12),
+                    title: Text('安装与连接说明'),
+                    children: [installationSteps],
+                  )
+                else
+                  installationSteps,
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  title: const Text('校验文件与签名'),
+                  children: [
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: SelectableText(
+                        '文件 SHA-256\n${manifest.sha256}\n\n签名证书 SHA-256\n${manifest.certificateSha256}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+              if (_error != null) ...[
+                Text(_error!, key: const Key('android-download-error')),
+                TextButton(
+                  onPressed: _loading ? null : _load,
+                  child: const Text('重新检查 APK'),
+                ),
+              ],
             ],
-            if (_error != null) ...[
-              Text(_error!, key: const Key('android-download-error')),
-              TextButton(
-                onPressed: _loading ? null : _load,
-                child: const Text('重新检查 APK'),
-              ),
-            ],
-          ],
+          ),
         ),
       ),
     );

@@ -18,6 +18,7 @@ class FakeVault implements SessionVault {
   int clears = 0, saves = 0, restores = 0;
   VaultState clearState = VaultState.empty;
   Completer<VaultResult>? pendingClear;
+  Completer<VaultResult>? pendingSave;
   bool? explicit;
   @override
   bool get supported => true;
@@ -42,6 +43,7 @@ class FakeVault implements SessionVault {
   }) async {
     saves++;
     explicit = explicitOptIn;
+    if (pendingSave != null) return pendingSave!.future;
     saved = session;
     return VaultResult(VaultState.saved, metadata: session.metadata);
   }
@@ -296,4 +298,33 @@ void main() {
     expect(state.logged, isFalse);
     await t.pumpWidget(const SizedBox.shrink());
   });
+  testWidgets(
+    'logout cannot treat unavailable clear as success during first pending save',
+    (t) async {
+      await setup(t);
+      await state.discardSavedSession();
+      initial.token = original.token;
+      initial.sessionExpiresAt = original.expiresAt;
+      initial.sessionAccount = 'owner';
+      final login = state.resumeAuthenticatedSession();
+      await t.pumpAndSettle();
+      await login;
+      vault.pendingSave = Completer<VaultResult>();
+      final save = state.setSavedSession(true);
+      await t.pump();
+      expect(state.vaultAuthenticationsInFlight, 1);
+      vault.clearState = VaultState.unavailable;
+      state.endSession();
+      await t.pumpAndSettle();
+      expect(state.logged, isFalse);
+      expect(state.vaultClearFailed, isTrue);
+      expect(state.error, contains('未能删除'));
+      vault.pendingSave!.complete(const VaultResult(VaultState.canceled));
+      await save;
+      await t.pumpAndSettle();
+      expect(state.vaultAuthenticationsInFlight, 0);
+      expect(state.savedCurrentSession, isFalse);
+      await t.pumpWidget(const SizedBox.shrink());
+    },
+  );
 }

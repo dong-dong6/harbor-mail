@@ -53,14 +53,42 @@ function assertDownloadManifest(manifest) {
   }
 }
 
+// Flutter's transparent native input is an editing/accessibility proxy. The
+// pinned engine assigns its CSS content width from semantics.rect but leaves
+// the browser's input padding/border intact (CI: 410px frame, 418px input).
+// Its direct flt-semantics owner is positioned/sized from the actual Flutter
+// semantics render rect, so measure that frame without subtracting guessed CSS
+// pixels or altering the app. Keep both boxes/styles as safe diagnostics.
+function measureFlutterTextField(element) {
+  if (!element.matches('input[data-semantics-role="text-field"],textarea[data-semantics-role="text-field"]')) {
+    throw new Error('Expected the real Flutter semantic text-editing proxy');
+  }
+  const frame = element.parentElement;
+  if (frame?.tagName.toLowerCase() !== 'flt-semantics') {
+    throw new Error('Flutter text field has no direct semantic render frame');
+  }
+  const bounds = node => {
+    const {x, y, width, height} = node.getBoundingClientRect();
+    return {x, y, width, height};
+  };
+  const style = element.ownerDocument.defaultView.getComputedStyle(element);
+  return {frame: bounds(frame), editable: bounds(element), boxModel: {
+    boxSizing: style.boxSizing, width: style.width, height: style.height,
+    paddingLeft: style.paddingLeft, paddingRight: style.paddingRight,
+    paddingTop: style.paddingTop, paddingBottom: style.paddingBottom,
+    borderLeftWidth: style.borderLeftWidth, borderRightWidth: style.borderRightWidth,
+    borderTopWidth: style.borderTopWidth, borderBottomWidth: style.borderBottomWidth,
+  }};
+}
+
 // Pure assertions are unit-tested with both valid geometry and regressions.
 // Bounds are collected from the real Flutter semantics DOM, never screenshot
 // OCR, guessed CSS card positions, or substitute HTML controls.
 function assertLoginLayoutGeometry(layout) {
-  const {viewport, username, login, heading, download, warning, pageMetrics} = layout;
+  const {viewport, username, login, card, heading, download, warning, pageMetrics} = layout;
   assert([1440, 390].includes(viewport.width), 'Exercise both required login viewport widths');
   assert.equal(viewport.height, viewport.width === 1440 ? 900 : 844);
-  for (const [name, box] of Object.entries({username, login, heading, download, warning})) {
+  for (const [name, box] of Object.entries({username, login, card, heading, download, warning})) {
     assert(box && ['x', 'y', 'width', 'height'].every(key => Number.isFinite(box[key])),
       name + ' has real, finite semantic bounds');
     assert(box.width > 0 && box.height > 0, name + ' is rendered');
@@ -71,18 +99,25 @@ function assertLoginLayoutGeometry(layout) {
   assert(pageMetrics.documentWidth <= viewport.width + 1 && pageMetrics.bodyWidth <= viewport.width + 1,
     'The compiled login page has no horizontal document overflow');
   assert(username.width <= 411 && login.width <= 411, 'The APK must not expand the 410px login form');
+  assert(card.width <= 411, 'The actual APK card stays within its 410px pane');
   assert(login.width >= (viewport.width === 1440 ? 390 : 300), 'The login pane does not collapse beside the APK');
   assert(username.x >= login.x - 1 && username.x + username.width <= login.x + login.width + 1,
     'The username field stays inside the login pane');
   assert(username.y + username.height <= login.y + 1, 'The username field precedes the login button');
+  assert(heading.height < card.height && warning.height < card.height,
+    'Heading and warning bounds belong to distinct text nodes, not the merged card');
+  for (const box of [heading, warning, download]) {
+    assert(box.x >= card.x - 1 && box.x + box.width <= card.x + card.width + 1,
+      'APK heading, warning and download stay inside their actual card');
+  }
   if (viewport.width === 1440) {
-    assert(heading.x >= login.x + login.width + 32 && download.x >= login.x + login.width + 32,
+    assert(card.x >= login.x + login.width + 32,
       'Desktop APK content is a separate right-hand column');
-    assert(heading.y < login.y + login.height, 'Desktop APK content does not stack beneath the form');
-    assert(heading.x + heading.width - login.x <= 981, 'Desktop login and APK fit their 980px container');
+    assert(card.y < login.y + login.height, 'Desktop APK content does not stack beneath the form');
+    assert(card.x + card.width - login.x <= 981, 'Desktop login and APK fit their 980px container');
   } else {
-    assert(heading.y >= login.y + login.height + 20, 'Mobile APK content stacks below the login form');
-    assert(heading.x >= login.x - 1 && heading.x + heading.width <= login.x + login.width + 1,
+    assert(card.y >= login.y + login.height + 20, 'Mobile APK content stacks below the login form');
+    assert(card.x >= login.x - 1 && card.x + card.width <= login.x + login.width + 1,
       'Mobile APK content shares the form column');
   }
 }
@@ -152,7 +187,6 @@ async function run(input) {
     const presence = enabled => cdp.send('WebAuthn.setAutomaticPresenceSimulation',
       {authenticatorId, enabled});
     const semantic = text => page.locator('semanticValue=' + JSON.stringify({text}));
-    const semanticLine = text => page.locator('semanticValue=' + JSON.stringify({text, line: true}));
     const button = name => page.getByRole('button', {name, exact: true});
     const responseFor = (suffix, method = 'POST') => page.waitForResponse(response =>
       response.url() === origin + '/api/v1' + suffix && response.request().method() === method);
@@ -198,9 +232,10 @@ async function run(input) {
 
     phase = 'compiled-app-responsive-login';
     const usernameField = page.getByRole('textbox', {name: /^用户名(?:\s|$)/});
-    const apkHeading = semanticLine('下载 Android APK');
+    const apkCard = page.locator('[flt-semantics-identifier="android-download-card"]');
+    const apkHeading = page.getByRole('heading', {name: '下载 Android APK', exact: true});
     const apkDownload = button('下载测试 APK');
-    const warning = semanticLine(DEVELOPMENT_WARNING);
+    const warning = page.locator('[flt-semantics-identifier="android-development-warning"]');
     // This comes from the same-run APK embedded in the integrated JAR. No route
     // interception supplies a fake manifest, APK, login response, or UI content.
     await apkDownload.waitFor({state: 'visible'});
@@ -209,17 +244,26 @@ async function run(input) {
       await frames();
       await usernameField.waitFor({state: 'visible'});
       await apkHeading.waitFor({state: 'visible'});
-      const layout = {viewport, username: await usernameField.boundingBox(),
-        login: await button('登录').boundingBox(), heading: await apkHeading.boundingBox()};
+      await warning.waitFor({state: 'visible'});
+      check(await warning.evaluate((element, text) =>
+        [element.getAttribute('aria-label'), element.textContent].includes(text), DEVELOPMENT_WARNING),
+      `The independent warning node contains the complete signing notice at ${viewport.width}px`);
+      const usernameGeometry = await usernameField.evaluate(measureFlutterTextField);
+      const layout = {viewport, username: usernameGeometry.frame,
+        usernameEditable: usernameGeometry.editable, usernameBoxModel: usernameGeometry.boxModel,
+        login: await button('登录').boundingBox(), card: await apkCard.boundingBox(),
+        heading: await apkHeading.boundingBox()};
       await page.screenshot({path: path.join(REPORT_DIR, `login-${viewport.width}x${viewport.height}.png`)});
       if (viewport.width === 390) {
         // Flutter's scrollable canvas has its own semantics scrolling. Wheel it
         // rather than assuming window.scrollY or changing DOM scroll styles.
         for (let attempt = 0; attempt < 8; attempt++) {
           const box = await apkDownload.boundingBox().catch(() => null);
-          if (box && box.y >= 0 && box.y + box.height <= viewport.height) break;
+          const notice = await warning.boundingBox().catch(() => null);
+          if (box && notice && box.y >= 0 && box.y + box.height <= viewport.height &&
+              notice.y >= 0 && notice.y + notice.height <= viewport.height) break;
           await page.mouse.move(viewport.width - 40, viewport.height - 80);
-          await page.mouse.wheel(0, 240);
+          await page.mouse.wheel(0, (box?.y < 0 || notice?.y < 0) ? -240 : 240);
           await frames();
         }
       }
@@ -410,7 +454,7 @@ async function run(input) {
 }
 
 module.exports = {parseOrigin, assertDemoHealth, verifyBridge, isAllowedRequest,
-  assertDownloadManifest, assertLoginLayoutGeometry, BRIDGE_PATH, BRIDGE_SHA256};
+  assertDownloadManifest, measureFlutterTextField, assertLoginLayoutGeometry, BRIDGE_PATH, BRIDGE_SHA256};
 if (require.main === module) {
   run(process.argv[2]).catch(error => { console.error(error.message); process.exitCode = 1; });
 }

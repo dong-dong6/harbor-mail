@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const {JSDOM} = require('jsdom');
 const harness = require('./test_passkeys_flutter_browser.cjs');
 let checks = 0;
 for (const input of [
@@ -42,6 +43,7 @@ for (const change of [
 const desktop = {viewport: {width: 1440, height: 900},
   username: {x: 230, y: 380, width: 410, height: 56},
   login: {x: 230, y: 520, width: 410, height: 48},
+  card: {x: 800, y: 166, width: 410, height: 430},
   heading: {x: 824, y: 190, width: 362, height: 32},
   download: {x: 824, y: 385, width: 156, height: 40},
   warning: {x: 824, y: 270, width: 362, height: 60},
@@ -51,10 +53,41 @@ const desktop = {viewport: {width: 1440, height: 900},
 const mobile = {viewport: {width: 390, height: 844},
   username: {x: 24, y: 270, width: 342, height: 56},
   login: {x: 24, y: 405, width: 342, height: 48},
+  card: {x: 24, y: 606, width: 342, height: 430},
   heading: {x: 48, y: 630, width: 294, height: 32},
   download: {x: 48, y: 640, width: 156, height: 40},
   warning: {x: 48, y: 520, width: 294, height: 80},
   pageMetrics: {innerWidth: 390, documentWidth: 390, bodyWidth: 390}};
+// Reproduce c283 CI's measured native-input +8px box model. The nearest
+// semantic owner has the real 410px frame; neither the broader ancestor nor a
+// guessed subtraction from the native input may supply the render dimensions.
+const document = new JSDOM('<flt-semantics id="outer"><flt-semantics id="field">' +
+  '<input data-semantics-role="text-field" aria-label="用户名" ' +
+  'style="box-sizing:content-box;width:410px;height:48px;padding:1px 2px;border:2px solid">' +
+  '</flt-semantics></flt-semantics>').window.document;
+const field = document.querySelector('#field');
+const editable = document.querySelector('input');
+field.getBoundingClientRect = () => ({x: 230, y: 420.5, width: 410, height: 48});
+editable.getBoundingClientRect = () => ({x: 230, y: 420.5, width: 418, height: 54});
+document.querySelector('#outer').getBoundingClientRect = () => ({x: 0, y: 0, width: 1440, height: 900});
+const measuredField = harness.measureFlutterTextField(editable);
+assert.deepEqual(measuredField.frame, {x: 230, y: 420.5, width: 410, height: 48}); checks++;
+assert.equal(measuredField.editable.width, 418); checks++;
+assert.equal(measuredField.boxModel.width, '410px'); checks++;
+assert.equal(measuredField.boxModel.paddingLeft, '2px'); checks++;
+assert.equal(measuredField.boxModel.borderLeftWidth, '2px'); checks++;
+harness.assertLoginLayoutGeometry({...desktop, username: measuredField.frame}); checks++;
+assert.throws(() => harness.assertLoginLayoutGeometry({...desktop, username: measuredField.editable})); checks++;
+field.getBoundingClientRect = () => ({x: 230, y: 420.5, width: 418, height: 48});
+assert.throws(() => harness.assertLoginLayoutGeometry({
+  ...desktop, username: harness.measureFlutterTextField(editable).frame,
+}), 'A genuinely widened Flutter frame still fails the original width limit'); checks++;
+assert.throws(() => harness.measureFlutterTextField(field)); checks++;
+editable.removeAttribute('data-semantics-role');
+assert.throws(() => harness.measureFlutterTextField(editable)); checks++;
+editable.setAttribute('data-semantics-role', 'text-field');
+document.body.append(editable);
+assert.throws(() => harness.measureFlutterTextField(editable)); checks++;
 for (const layout of [desktop, mobile]) {
   harness.assertLoginLayoutGeometry(layout); checks++;
 }
@@ -63,10 +96,13 @@ for (const [sourceLayout, mutate] of [
   [desktop, value => { value.heading.x = 230; value.heading.y = 650; }],
   [desktop, value => { value.download.x = 600; }],
   [desktop, value => { value.login.width = 300; value.username.width = 300; }],
-  [desktop, value => { value.heading.y = 650; }],
+  [desktop, value => { value.card.y = 650; }],
+  [desktop, value => { value.card.width = 418; }],
+  [desktop, value => { value.heading = {...value.card}; }],
+  [desktop, value => { value.warning = {...value.card}; }],
   [desktop, value => { value.username = null; }],
   [desktop, value => { value.username.x = Number.NaN; }],
-  [mobile, value => { value.heading.y = 300; }],
+  [mobile, value => { value.card.y = 300; }],
   [mobile, value => { value.heading.x = 200; }],
   [mobile, value => { value.download.width = 390; }],
   [mobile, value => { value.warning.x = -10; }],

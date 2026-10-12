@@ -127,6 +127,71 @@ Future<void> _showLogin(
 }
 
 void main() {
+  testWidgets(
+    'APK heading and warning expose their own semantic render bounds',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      try {
+        for (final size in [const Size(1440, 900), const Size(390, 844)]) {
+          await _showLogin(tester, size);
+          final card = tester.getSemantics(
+            find.byKey(const Key('android-download-semantics')),
+          );
+          final heading = tester.getSemantics(
+            find.byKey(const Key('android-download-heading-semantics')),
+          );
+          final warning = tester.getSemantics(
+            find.byKey(const Key('android-development-warning-semantics')),
+          );
+          expect(card.getSemanticsData().identifier, 'android-download-card');
+          expect(
+            heading.getSemanticsData().identifier,
+            'android-download-heading',
+          );
+          expect(
+            warning.getSemanticsData().identifier,
+            'android-development-warning',
+          );
+          expect(heading.getSemanticsData().label, '下载 Android APK');
+          expect(
+            warning.getSemanticsData().label,
+            '开发测试版 · Android 调试签名。请使用测试账号；不要用于正式邮件。',
+          );
+          expect({card.id, heading.id, warning.id}.length, 3);
+          expect(
+            heading.rect.size,
+            tester.getSize(find.text('下载 Android APK')),
+          );
+          expect(
+            warning.rect.size,
+            tester.getSize(
+              find.byKey(const Key('android-development-warning')),
+            ),
+          );
+          expect(heading.rect.height, lessThan(card.rect.height));
+          expect(warning.rect.height, lessThan(card.rect.height));
+          if (size.width == 390) {
+            await tester.ensureVisible(
+              find.byKey(const Key('android-download-button')),
+            );
+            await tester.pumpAndSettle();
+            for (final key in [
+              'android-development-warning',
+              'android-download-button',
+            ]) {
+              final rect = tester.getRect(find.byKey(Key(key)));
+              expect(rect.top, greaterThanOrEqualTo(0));
+              expect(rect.bottom, lessThanOrEqualTo(size.height));
+            }
+          }
+          expect(tester.takeException(), isNull);
+        }
+      } finally {
+        semantics.dispose();
+      }
+    },
+  );
+
   testWidgets('1440x900 separates login and APK into bounded wide panes', (
     tester,
   ) async {

@@ -10,7 +10,7 @@
   "productionDeployment": "not_performed",
   "androidSigning": "Ephemeral development debug signature; no fixed production key; cross-CI in-place update may be incompatible",
   "flutterAnalyze": "passed local integrated source",
-  "flutterTests": 435,
+  "flutterTests": 437,
   "h2": {
     "tests": 379,
     "failures": 0,
@@ -26,5 +26,6 @@
   "browserEndToEnd": "new desktop/mobile compiled-Web checks added; exact-commit Chromium CI pending",
   "postgresql": "pending exact-commit CI",
   "nativeAndroidBuild": "pending exact-commit CI",
-  "nativeWindowsBuild": "pending exact-commit CI"
+  "nativeWindowsBuild": "pending exact-commit CI",
+  "loginVisualHarness": "Measured Flutter semantic render frames; native input box-model diagnostics retained; real browser CI pending"
 }
