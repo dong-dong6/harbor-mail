@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Source this file. Toolchains in tools/ are development-only and not packaged.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export CI=true FLUTTER_SUPPRESS_ANALYTICS=true DART_SUPPRESS_ANALYTICS=true
+export CI=true BOT=true FLUTTER_SUPPRESS_ANALYTICS=true DART_SUPPRESS_ANALYTICS=true
 if [[ -d "$ROOT/tools/flutter" ]]; then
   export HOME="$ROOT/tools/sdk-home"
   export XDG_CONFIG_HOME="$HOME/.config"
