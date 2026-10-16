@@ -87,7 +87,7 @@ public final class MailNotificationBridge implements MethodChannel.MethodCallHan
                         launch.putExtra("harbor.notification.open", true);
                         PendingIntent pending = PendingIntent.getActivity(activity, 0, launch, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
                         Notification.Builder builder = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(activity, CHANNEL_ID) : new Notification.Builder(activity);
-                        builder.setSmallIcon(android.R.drawable.stat_notify_email)
+                        builder.setSmallIcon(R.drawable.ic_mail_notification)
                             .setContentTitle("泊信 · 新邮件")
                             .setContentText("有新邮件，打开泊信查看")
                             .setContentIntent(pending).setAutoCancel(true)
