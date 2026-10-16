@@ -33,37 +33,36 @@ const _accounts = <Map<String, dynamic>>[
 ];
 
 Map<String, dynamic> _message(int index, {String account = 'alpha'}) => {
-      'id': 'm$index',
-      'accountId': account,
-      'fromName': 'Synthetic sender $index',
-      'fromAddress': 'sender$index@example.invalid',
-      'subject': 'Synthetic subject $index',
-      'snippet': 'Synthetic preview $index',
-      'bodyText': 'Synthetic body $index',
-      'receivedAt': '2026-10-01T08:00:00Z',
-      'isRead': false,
-      'isStarred': false,
-      'revision': 1,
-      'to': <Object>[],
-      'attachments': <Object>[],
-    };
+  'id': 'm$index',
+  'accountId': account,
+  'fromName': 'Synthetic sender $index',
+  'fromAddress': 'sender$index@example.invalid',
+  'subject': 'Synthetic subject $index',
+  'snippet': 'Synthetic preview $index',
+  'bodyText': 'Synthetic body $index',
+  'receivedAt': '2026-10-01T08:00:00Z',
+  'isRead': false,
+  'isStarred': false,
+  'revision': 1,
+  'to': <Object>[],
+  'attachments': <Object>[],
+};
 
 http.Response _json(Object value, {int status = 200}) => http.Response(
-      jsonEncode(value),
-      status,
-      headers: {'content-type': 'application/json; charset=utf-8'},
-    );
+  jsonEncode(value),
+  status,
+  headers: {'content-type': 'application/json; charset=utf-8'},
+);
 
 http.Response _page(
   Iterable<Map<String, dynamic>> messages, {
   String? cursor,
-}) =>
-    _json({
-      'items': messages.toList(),
-      'coverage': 'DEMO',
-      'hasMore': cursor != null,
-      if (cursor != null) 'nextCursor': cursor,
-    });
+}) => _json({
+  'items': messages.toList(),
+  'coverage': 'DEMO',
+  'hasMore': cursor != null,
+  if (cursor != null) 'nextCursor': cursor,
+});
 
 class _Fixture {
   final List<Map<String, dynamic>> accounts;
@@ -93,7 +92,7 @@ class _Fixture {
             'features': {
               'html': false,
               'offlineCache': false,
-              'oauthSettings': oauthFeature
+              'oauthSettings': oauthFeature,
             },
           });
         }
@@ -108,15 +107,16 @@ class _Fixture {
           if (listResponse != null) return await listResponse!(request.url);
           if (accounts.isEmpty) return _page([]);
           final isBeta = request.url.queryParameters['accountId'] == 'beta';
-          final filtered = request.url.queryParameters['folder'] == 'STARRED' ||
+          final filtered =
+              request.url.queryParameters['folder'] == 'STARRED' ||
               request.url.queryParameters.containsKey('query');
           return _page([
             _message(
               isBeta
                   ? 2
                   : filtered
-                      ? 1
-                      : 0,
+                  ? 1
+                  : 0,
               account: isBeta ? 'beta' : 'alpha',
             ),
           ]);
@@ -155,8 +155,14 @@ Future<void> _signIn(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(MailApp(api: fixture.api, navigation: navigation));
-  await tester.enterText(find.byType(TextField).at(0), 'synthetic-owner');
-  await tester.enterText(find.byType(TextField).at(1), 'synthetic-password');
+  await tester.enterText(
+    find.widgetWithText(TextField, '用户名'),
+    'synthetic-owner',
+  );
+  await tester.enterText(
+    find.widgetWithText(TextField, '密码'),
+    'synthetic-password',
+  );
   await tester.tap(find.text('登录'));
   await tester.pumpAndSettle();
 }
@@ -338,21 +344,23 @@ void main() {
     await _disposeMailbox(tester);
   });
   testWidgets(
-      'copied OAuth settings URL resumes authenticated readonly settings',
-      (tester) async {
-    final f = _Fixture()..oauthFeature = true;
-    final nav = _Navigation('/settings/oauth');
-    await _signIn(tester, f, navigation: nav);
-    expect(find.byType(OAuthSettingsPage), findsOneWidget);
-    expect(nav.location, '/settings/oauth');
-    final go = nav.go('/settings/accounts');
-    await tester.pumpAndSettle();
-    expect(await go, isTrue);
-    expect(find.byType(OAuthSettingsPage), findsNothing);
-    await _disposeMailbox(tester);
-  });
-  testWidgets('browser harness roles and labels match rendered semantics',
-      (tester) async {
+    'copied OAuth settings URL resumes authenticated readonly settings',
+    (tester) async {
+      final f = _Fixture()..oauthFeature = true;
+      final nav = _Navigation('/settings/oauth');
+      await _signIn(tester, f, navigation: nav);
+      expect(find.byType(OAuthSettingsPage), findsOneWidget);
+      expect(nav.location, '/settings/oauth');
+      final go = nav.go('/settings/accounts');
+      await tester.pumpAndSettle();
+      expect(await go, isTrue);
+      expect(find.byType(OAuthSettingsPage), findsNothing);
+      await _disposeMailbox(tester);
+    },
+  );
+  testWidgets('browser harness roles and labels match rendered semantics', (
+    tester,
+  ) async {
     final handle = tester.ensureSemantics();
     final f = _Fixture()..oauthFeature = true;
     final nav = _Navigation('/mail/m0');
@@ -365,8 +373,9 @@ void main() {
     final back = nav.go('/mail');
     await tester.pumpAndSettle();
     expect(
-        tester.getSemantics(find.byType(AlertDialog)).getSemanticsData().role,
-        SemanticsRole.alertDialog);
+      tester.getSemantics(find.byType(AlertDialog)).getSemanticsData().role,
+      SemanticsRole.alertDialog,
+    );
     expect(find.bySemanticsLabel('放弃未保存的更改？'), findsOneWidget);
     expect(find.bySemanticsLabel('继续编辑'), findsOneWidget);
     await tester.tap(find.text('放弃更改'));
@@ -375,8 +384,10 @@ void main() {
     final oauthRoute = nav.go('/settings/oauth');
     await tester.pumpAndSettle();
     await oauthRoute;
-    expect(find.bySemanticsLabel('演示环境 · 仅可查看配置状态。所有输入和保存均已禁用，请勿输入真实密钥。'),
-        findsOneWidget);
+    expect(
+      find.bySemanticsLabel('演示环境 · 仅可查看配置状态。所有输入和保存均已禁用，请勿输入真实密钥。'),
+      findsOneWidget,
+    );
     f.missingDetails = true;
     final missing = nav.go('/mail/missing');
     await tester.pumpAndSettle();

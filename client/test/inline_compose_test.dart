@@ -202,6 +202,9 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       expect(find.textContaining('发件人：sender@example.invalid'), findsOneWidget);
+      expect(find.textContaining('收件人：me@example.invalid'), findsNothing);
+      await tester.tap(find.text('收件详情'));
+      await tester.pumpAndSettle();
       expect(find.textContaining('收件人：me@example.invalid'), findsOneWidget);
       expect(
         find.textContaining('抄送：Other <other@example.invalid>'),

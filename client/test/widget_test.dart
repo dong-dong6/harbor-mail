@@ -8,83 +8,83 @@ import 'package:harbor_mail/api.dart';
 import 'package:harbor_mail/main.dart';
 
 MailApi fake({bool noAccounts = false, int messageCount = 1}) => MailApi(
-      base: 'https://mail.invalid/api/v1',
-      client: MockClient((req) async {
-        final p = req.url.path;
-        dynamic value;
-        if (p.endsWith('/auth/login')) {
-          value = {'accessToken': 'fake-session', 'demoMode': true};
-        } else if (p.endsWith('/accounts')) {
-          value = {
-            'items': noAccounts
-                ? []
-                : [
-                    {
-                      'id': 'demo',
-                      'email': 'demo@example.invalid',
-                      'displayName': '演示邮箱',
-                      'status': 'DEMO',
-                      'unreadCount': 1,
-                    },
-                  ],
-          };
-        } else if (p.endsWith('/settings/capabilities')) {
-          value = {
-            'demoMode': true,
-            'providers': [],
-            'limits': {'maxAttachmentBytes': 10485760},
-            'features': {'html': false, 'offlineCache': false},
-          };
-        } else if (p.endsWith('/messages/m1')) {
-          value = {
-            'id': 'm1',
-            'accountId': 'demo',
-            'fromName': '设计团队',
-            'fromAddress': 'design@example.invalid',
-            'subject': '欢迎来到泊信',
-            'bodyText': '安全的纯文本内容',
-            'bodyHtml': '<script>alert(1)</script>',
-            'to': [],
-            'attachments': [],
-            'isRead': false,
-            'isStarred': false,
-            'revision': 1,
-          };
-        } else if (p.endsWith('/messages')) {
-          value = {
-            'items': noAccounts
-                ? []
-                : List.generate(
-                    messageCount,
-                    (index) => {
-                      'id': 'm${index + 1}',
-                      'accountId': 'demo',
-                      'fromName': index == 0 ? '设计团队' : '合成发件人 ${index + 1}',
-                      'fromAddress': 'design@example.invalid',
-                      'subject': index == 0 ? '欢迎来到泊信' : '合成测试邮件 ${index + 1}',
-                      'snippet': '一个安静的邮件空间',
-                      'receivedAt': '2026-09-30T05:00:00Z',
-                      'isRead': index.isOdd,
-                      'isStarred': index % 3 == 1,
-                      'revision': 1,
-                    },
-                  ),
-            'hasMore': false,
-            'coverage': 'DEMO',
-          };
-        } else {
-          value = {'items': []};
-        }
-        return http.Response(
-          jsonEncode(value),
-          200,
-          headers: {'content-type': 'application/json; charset=utf-8'},
-        );
-      }),
+  base: 'https://mail.invalid/api/v1',
+  client: MockClient((req) async {
+    final p = req.url.path;
+    dynamic value;
+    if (p.endsWith('/auth/login')) {
+      value = {'accessToken': 'fake-session', 'demoMode': true};
+    } else if (p.endsWith('/accounts')) {
+      value = {
+        'items': noAccounts
+            ? []
+            : [
+                {
+                  'id': 'demo',
+                  'email': 'demo@example.invalid',
+                  'displayName': '演示邮箱',
+                  'status': 'DEMO',
+                  'unreadCount': 1,
+                },
+              ],
+      };
+    } else if (p.endsWith('/settings/capabilities')) {
+      value = {
+        'demoMode': true,
+        'providers': [],
+        'limits': {'maxAttachmentBytes': 10485760},
+        'features': {'html': false, 'offlineCache': false},
+      };
+    } else if (p.endsWith('/messages/m1')) {
+      value = {
+        'id': 'm1',
+        'accountId': 'demo',
+        'fromName': '设计团队',
+        'fromAddress': 'design@example.invalid',
+        'subject': '欢迎来到泊信',
+        'bodyText': '安全的纯文本内容',
+        'bodyHtml': '<script>alert(1)</script>',
+        'to': [],
+        'attachments': [],
+        'isRead': false,
+        'isStarred': false,
+        'revision': 1,
+      };
+    } else if (p.endsWith('/messages')) {
+      value = {
+        'items': noAccounts
+            ? []
+            : List.generate(
+                messageCount,
+                (index) => {
+                  'id': 'm${index + 1}',
+                  'accountId': 'demo',
+                  'fromName': index == 0 ? '设计团队' : '合成发件人 ${index + 1}',
+                  'fromAddress': 'design@example.invalid',
+                  'subject': index == 0 ? '欢迎来到泊信' : '合成测试邮件 ${index + 1}',
+                  'snippet': '一个安静的邮件空间',
+                  'receivedAt': '2026-09-30T05:00:00Z',
+                  'isRead': index.isOdd,
+                  'isStarred': index % 3 == 1,
+                  'revision': 1,
+                },
+              ),
+        'hasMore': false,
+        'coverage': 'DEMO',
+      };
+    } else {
+      value = {'items': []};
+    }
+    return http.Response(
+      jsonEncode(value),
+      200,
+      headers: {'content-type': 'application/json; charset=utf-8'},
     );
+  }),
+);
 Future<void> signIn(WidgetTester tester) async {
-  await tester.enterText(find.byType(TextField).at(0), 'owner');
-  await tester.enterText(find.byType(TextField).at(1), 'test-only');
+  await tester.enterText(find.widgetWithText(TextField, '用户名'), 'owner');
+  await tester.enterText(find.widgetWithText(TextField, '密码'), 'test-only');
   await tester.ensureVisible(find.text('登录'));
   await tester.pumpAndSettle();
   expect(find.text('登录').hitTestable(), findsOneWidget);
@@ -121,13 +121,11 @@ void main() {
     await tester.tap(find.text('发件状态'));
     await tester.pumpAndSettle();
     expect(find.text('暂无发送记录'), findsOneWidget);
-    await tester.tap(find.text('关闭'));
-    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
     await tester.tap(find.text('草稿箱'));
     await tester.pumpAndSettle();
     expect(find.text('暂时没有草稿'), findsOneWidget);
-    await tester.tap(find.text('关闭'));
-    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
     await tester.tap(find.text('退出登录'));
     await tester.pumpAndSettle();
     expect(find.text('登录你的私人邮件服务器'), findsOneWidget);

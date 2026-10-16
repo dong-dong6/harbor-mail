@@ -55,8 +55,9 @@ class MailRoute {
       return MailRoute(
         messageId: message,
         account: account,
-        folder: folder,
-        filter: filter,
+        // Preserve old bookmarks while keeping star status a single view.
+        folder: filter == 'starred' ? 'STARRED' : folder,
+        filter: filter == 'starred' ? 'all' : filter,
         settings: settings,
       );
     } on FormatException {

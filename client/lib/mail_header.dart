@@ -4,11 +4,13 @@ import 'package:flutter/material.dart';
 class MailHeader extends StatelessWidget {
   final Map<String, dynamic> message;
   const MailHeader({super.key, required this.message});
-  String addresses(dynamic values) => (values as List? ?? []).map((value) {
+  String addresses(dynamic values) => (values as List? ?? [])
+      .map((value) {
         final address = value['address']?.toString() ?? '';
         final name = value['name']?.toString().trim() ?? '';
         return name.isEmpty ? address : '$name <$address>';
-      }).join(', ');
+      })
+      .join(', ');
   String get received {
     final raw = message['receivedAt']?.toString() ?? '';
     final date = DateTime.tryParse(raw)?.toLocal();
@@ -19,6 +21,7 @@ class MailHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compact = MediaQuery.sizeOf(context).width < 600;
     final fromName = message['fromName']?.toString().trim() ?? '';
     final fromAddress = message['fromAddress']?.toString() ?? '';
     final cc = addresses(message['cc']);
@@ -34,34 +37,53 @@ class MailHeader extends StatelessWidget {
           // Expose readonly selectable content as a label rather than an empty
           // web text-input node; visual selection/copy behavior is unchanged.
           semanticsLabel: subject,
-          style: const TextStyle(
-            fontSize: 24,
+          style: TextStyle(
+            fontSize: compact ? 21 : 24,
             fontWeight: FontWeight.w600,
             height: 1.4,
           ),
         ),
-        const SizedBox(height: 20),
+        SizedBox(height: compact ? 12 : 20),
         field(
           '发件人',
           fromName.isEmpty ? fromAddress : '$fromName <$fromAddress>',
         ),
-        field('收件人', addresses(message['to'])),
-        if (cc.isNotEmpty) field('抄送', cc),
-        field('接收时间', received),
+        if (compact)
+          Material(
+            color: Colors.transparent,
+            child: ExpansionTile(
+              key: ValueKey('recipient-details-${message['id']}'),
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: EdgeInsets.zero,
+              title: const Text('收件详情', style: TextStyle(fontSize: 12)),
+              subtitle: Text(received, style: const TextStyle(fontSize: 11)),
+              expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                field('收件人', addresses(message['to'])),
+                if (cc.isNotEmpty) field('抄送', cc),
+                field('接收时间', received),
+              ],
+            ),
+          )
+        else ...[
+          field('收件人', addresses(message['to'])),
+          if (cc.isNotEmpty) field('抄送', cc),
+          field('接收时间', received),
+        ],
       ],
     );
   }
 
   Widget field(String label, String value) => Padding(
-        padding: const EdgeInsets.only(bottom: 7),
-        child: SelectableText(
-          '$label：${value.isEmpty ? '未提供' : value}',
-          semanticsLabel: '$label：${value.isEmpty ? '未提供' : value}',
-          style: const TextStyle(
-            fontSize: 12,
-            color: Color(0xff596a81),
-            height: 1.6,
-          ),
-        ),
-      );
+    padding: const EdgeInsets.only(bottom: 7),
+    child: SelectableText(
+      '$label：${value.isEmpty ? '未提供' : value}',
+      semanticsLabel: '$label：${value.isEmpty ? '未提供' : value}',
+      style: const TextStyle(
+        fontSize: 12,
+        color: Color(0xff596a81),
+        height: 1.6,
+      ),
+    ),
+  );
 }

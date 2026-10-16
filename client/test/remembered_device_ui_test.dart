@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harbor_mail/api.dart';
@@ -514,6 +515,22 @@ void main() {
   testWidgets(
     'unattended mailbox and outbox polling cannot extend device authority',
     (tester) async {
+      const notificationChannel = MethodChannel('harbor/mail_notifications');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        notificationChannel,
+        (call) async {
+          if (call.method == 'status') {
+            return {'enabled': true, 'allowed': true};
+          }
+          return false;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          notificationChannel,
+          null,
+        ),
+      );
       await setup(tester);
       await login(tester);
       var clock = now;
@@ -540,7 +557,7 @@ void main() {
       expect(vault.stored, isNotNull);
       expect(vault.clears, clears);
       expect(vault.begins, 0);
-      await tester.tap(find.widgetWithText(TextButton, '刷新').last);
+      await tester.tap(find.widgetWithText(TextButton, '刷新状态'));
       await tester.pumpAndSettle();
       expect(vault.begins, 1);
       expect(requests.any((r) => r.url.path.endsWith('/auth/refresh')), isTrue);

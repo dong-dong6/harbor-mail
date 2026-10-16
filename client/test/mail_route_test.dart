@@ -21,6 +21,19 @@ void main() {
       expect(MailRoute.parse('/settings/$leaf').settings, leaf);
     }
   });
+  test('old starred filter URLs become the single starred folder view', () {
+    final route = MailRoute.parse('/mail?folder=SENT&filter=starred');
+    expect(route.folder, 'STARRED');
+    expect(route.filter, 'all');
+    expect(route.location, '/mail?folder=STARRED');
+  });
+  test('draft and outbox URLs preserve the mailbox scope', () {
+    for (final folder in ['DRAFTS', 'OUTBOX']) {
+      final route = MailRoute.parse('/mail?account=a&folder=$folder');
+      expect(route.folder, folder);
+      expect(route.account, 'a');
+    }
+  });
   test('external and malformed paths cannot redirect or become API paths', () {
     for (final location in [
       'https://evil.invalid',

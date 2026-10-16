@@ -5,6 +5,7 @@ import 'api.dart';
 import 'android_updates.dart';
 import 'oauth_settings.dart';
 import 'oauth_browser.dart';
+import 'mail_notifications.dart';
 
 typedef Json = Map<String, dynamic>;
 const muted = Color(0xff7c899c), blue = Color(0xff0b57d0);
@@ -19,6 +20,7 @@ class AccountSettingsPage extends StatefulWidget {
   final VoidCallback? onClose;
   final String initialSection;
   final ValueChanged<String>? onSectionChanged;
+  final ValueChanged<String>? onNavigateSettings;
   const AccountSettingsPage({
     super.key,
     required this.api,
@@ -29,6 +31,7 @@ class AccountSettingsPage extends StatefulWidget {
     this.onClose,
     this.initialSection = 'accounts',
     this.onSectionChanged,
+    this.onNavigateSettings,
   });
   @override
   AccountSettingsPageState createState() => AccountSettingsPageState();
@@ -314,12 +317,6 @@ class AccountSettingsPageState extends State<AccountSettingsPage> {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
             children: [
-              if (widget.deviceSecurity != null) widget.deviceSecurity!,
-              if (supportsAndroidUpdates)
-                AndroidUpdateCard(
-                  key: ValueKey(widget.api.base),
-                  apiBase: widget.api.base,
-                ),
               const Text(
                 '已连接邮箱',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
@@ -364,6 +361,52 @@ class AccountSettingsPageState extends State<AccountSettingsPage> {
                     ),
                 ],
               ),
+              const SizedBox(height: 28),
+              const Divider(),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Text(
+                  '登录与设备安全',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+              ),
+              if (widget.onNavigateSettings != null) ...[
+                ListTile(
+                  key: const Key('settings-devices'),
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.devices_outlined),
+                  title: const Text('设备与登录'),
+                  subtitle: const Text('扫码添加设备、查看登录设备及撤销访问'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: locked
+                      ? null
+                      : () => widget.onNavigateSettings!('devices'),
+                ),
+                ListTile(
+                  key: const Key('settings-passkeys'),
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.key_outlined),
+                  title: const Text('通行密钥'),
+                  subtitle: const Text('管理免密码登录方式'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: locked
+                      ? null
+                      : () => widget.onNavigateSettings!('passkeys'),
+                ),
+              ],
+              if (widget.deviceSecurity != null) widget.deviceSecurity!,
+              if (MailNotifications.supported) const MailNotificationSettings(),
+              if (supportsAndroidUpdates) ...[
+                const SizedBox(height: 20),
+                const Text(
+                  '应用更新',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+                AndroidUpdateCard(
+                  key: ValueKey(widget.api.base),
+                  apiBase: widget.api.base,
+                ),
+              ],
             ],
           ),
         ),

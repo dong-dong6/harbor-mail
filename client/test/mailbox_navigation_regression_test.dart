@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harbor_mail/api.dart';
 import 'package:harbor_mail/main.dart';
@@ -27,37 +28,36 @@ const _accounts = <Map<String, dynamic>>[
 ];
 
 Map<String, dynamic> _message(int index, {String account = 'alpha'}) => {
-      'id': 'm$index',
-      'accountId': account,
-      'fromName': 'Synthetic sender $index',
-      'fromAddress': 'sender$index@example.invalid',
-      'subject': 'Synthetic subject $index',
-      'snippet': 'Synthetic preview $index',
-      'bodyText': 'Synthetic body $index',
-      'receivedAt': '2026-10-01T08:00:00Z',
-      'isRead': false,
-      'isStarred': false,
-      'revision': 1,
-      'to': <Object>[],
-      'attachments': <Object>[],
-    };
+  'id': 'm$index',
+  'accountId': account,
+  'fromName': 'Synthetic sender $index',
+  'fromAddress': 'sender$index@example.invalid',
+  'subject': 'Synthetic subject $index',
+  'snippet': 'Synthetic preview $index',
+  'bodyText': 'Synthetic body $index',
+  'receivedAt': '2026-10-01T08:00:00Z',
+  'isRead': false,
+  'isStarred': false,
+  'revision': 1,
+  'to': <Object>[],
+  'attachments': <Object>[],
+};
 
 http.Response _json(Object value, {int status = 200}) => http.Response(
-      jsonEncode(value),
-      status,
-      headers: {'content-type': 'application/json; charset=utf-8'},
-    );
+  jsonEncode(value),
+  status,
+  headers: {'content-type': 'application/json; charset=utf-8'},
+);
 
 http.Response _page(
   Iterable<Map<String, dynamic>> messages, {
   String? cursor,
-}) =>
-    _json({
-      'items': messages.toList(),
-      'coverage': 'DEMO',
-      'hasMore': cursor != null,
-      if (cursor != null) 'nextCursor': cursor,
-    });
+}) => _json({
+  'items': messages.toList(),
+  'coverage': 'DEMO',
+  'hasMore': cursor != null,
+  if (cursor != null) 'nextCursor': cursor,
+});
 
 class _Fixture {
   final List<Map<String, dynamic>> accounts;
@@ -89,20 +89,64 @@ class _Fixture {
         if (path.endsWith('/folders')) {
           return _json({'items': <Object>[]});
         }
+        if (path.endsWith('/auth/devices')) return _json({'items': []});
+        if (path.endsWith('/drafts')) {
+          return _json({
+            'items': [
+              {
+                'id': 'draft-a',
+                'accountId': 'alpha',
+                'subject': 'Alpha draft',
+                'updatedAt': '2026-10-16T08:00:00Z',
+              },
+              {
+                'id': 'draft-b',
+                'accountId': 'beta',
+                'subject': 'Beta draft',
+                'updatedAt': '2026-10-16T09:00:00Z',
+              },
+            ],
+          });
+        }
+        if (path.endsWith('/send-intents')) {
+          return _json({
+            'items': [
+              {
+                'id': 'send-a',
+                'accountId': 'alpha',
+                'subject': 'Alpha send',
+                'status': 'UNKNOWN',
+              },
+              {
+                'id': 'send-b',
+                'accountId': 'beta',
+                'subject': 'Beta send',
+                'status': 'ACCEPTED',
+              },
+            ],
+          });
+        }
+        if (path.endsWith('/sync')) {
+          return _json({'id': 'sync-1', 'status': 'QUEUED'});
+        }
+        if (path.endsWith('/sync-jobs/sync-1')) {
+          return _json({'id': 'sync-1', 'status': 'SUCCEEDED'});
+        }
         if (path.endsWith('/messages')) {
           listRequests.add(request.url);
           if (listResponse != null) return await listResponse!(request.url);
           if (accounts.isEmpty) return _page([]);
           final isBeta = request.url.queryParameters['accountId'] == 'beta';
-          final filtered = request.url.queryParameters['folder'] == 'STARRED' ||
+          final filtered =
+              request.url.queryParameters['folder'] == 'STARRED' ||
               request.url.queryParameters.containsKey('query');
           return _page([
             _message(
               isBeta
                   ? 2
                   : filtered
-                      ? 1
-                      : 0,
+                  ? 1
+                  : 0,
               account: isBeta ? 'beta' : 'alpha',
             ),
           ]);
@@ -134,8 +178,14 @@ Future<void> _signIn(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(MailApp(api: fixture.api));
-  await tester.enterText(find.byType(TextField).at(0), 'synthetic-owner');
-  await tester.enterText(find.byType(TextField).at(1), 'synthetic-password');
+  await tester.enterText(
+    find.widgetWithText(TextField, '用户名'),
+    'synthetic-owner',
+  );
+  await tester.enterText(
+    find.widgetWithText(TextField, '密码'),
+    'synthetic-password',
+  );
   await tester.tap(find.text('登录'));
   await tester.pumpAndSettle();
 }
@@ -151,9 +201,8 @@ Finder _row(int index) => find.byKey(ValueKey('message-m$index'));
 Finder get _listScrollable =>
     find.descendant(of: _messageList, matching: find.byType(Scrollable)).first;
 Finder get _search => find.byWidgetPredicate(
-      (widget) =>
-          widget is TextField && widget.decoration?.hintText == '搜索已同步的邮件',
-    );
+  (widget) => widget is TextField && widget.decoration?.hintText == '搜索已同步的邮件',
+);
 
 Future<void> _chooseBeta(WidgetTester tester) async {
   await tester.tap(find.byKey(const ValueKey('account-beta')));
@@ -171,6 +220,133 @@ Future<void> _reachLoadMore(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets(
+    'settings hide mail search and device navigation returns to settings home',
+    (tester) async {
+      final fixture = _Fixture();
+      await _signIn(tester, fixture);
+      await tester.tap(find.byTooltip('账户与设置'));
+      await tester.pumpAndSettle();
+      expect(_search, findsNothing);
+      await tester.ensureVisible(find.byKey(const Key('settings-devices')));
+      await tester.tap(find.byKey(const Key('settings-devices')));
+      await tester.pumpAndSettle();
+      final state = tester.state<MailboxState>(find.byType(Mailbox));
+      expect(state.settingsSection, 'devices');
+      await tester.tap(find.byTooltip('返回设置首页'));
+      await tester.pumpAndSettle();
+      expect(state.settingsSection, 'accounts');
+      expect(state.settingsOpen, isTrue);
+      await tester.tap(find.byTooltip('返回邮箱'));
+      await tester.pumpAndSettle();
+      expect(_search, findsOneWidget);
+      await _disposeMailbox(tester);
+    },
+  );
+
+  testWidgets(
+    'notification click waits for login and does not fetch protected mail first',
+    (tester) async {
+      const channel = MethodChannel('harbor/mail_notifications');
+      var pending = true;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+        call,
+      ) async {
+        if (call.method == 'consumeOpen') {
+          final value = pending;
+          pending = false;
+          return value;
+        }
+        if (call.method == 'status') {
+          return {'enabled': false, 'allowed': false};
+        }
+        return null;
+      });
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel,
+          null,
+        ),
+      );
+      final fixture = _Fixture();
+      await tester.pumpWidget(MailApp(api: fixture.api));
+      await tester.pumpAndSettle();
+      expect(fixture.requests, isEmpty);
+      await _signIn(tester, fixture);
+      final state = tester.state<MailboxState>(find.byType(Mailbox));
+      expect(state.logged, isTrue);
+      expect(state.account, '');
+      expect(state.folder, 'INBOX');
+      expect(_messageList, findsOneWidget);
+      await _disposeMailbox(tester);
+    },
+  );
+
+  testWidgets('unread and all filters stay in the starred folder', (
+    tester,
+  ) async {
+    final fixture = _Fixture();
+    await _signIn(tester, fixture);
+    await tester.tap(find.text('星标邮件'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('未读'));
+    await tester.pumpAndSettle();
+    expect(fixture.listRequests.last.queryParameters['folder'], 'STARRED');
+    expect(fixture.listRequests.last.queryParameters['unreadOnly'], 'true');
+    await tester.tap(find.text('全部邮件'));
+    await tester.pumpAndSettle();
+    expect(fixture.listRequests.last.queryParameters['folder'], 'STARRED');
+    expect(fixture.listRequests.last.queryParameters['unreadOnly'], 'false');
+    await _disposeMailbox(tester);
+  });
+
+  testWidgets(
+    'draft and outbox are scoped content pages, never remote folders',
+    (tester) async {
+      final fixture = _Fixture();
+      await _signIn(tester, fixture);
+      await _chooseBeta(tester);
+      await tester.tap(find.text('草稿箱'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('draft-list')), findsOneWidget);
+      expect(find.text('Beta draft'), findsOneWidget);
+      expect(find.text('Alpha draft'), findsNothing);
+      expect(find.byType(AlertDialog), findsNothing);
+      await tester.tap(find.text('发件状态'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('outbox-page')), findsOneWidget);
+      expect(find.text('Beta send'), findsOneWidget);
+      expect(find.text('Alpha send'), findsNothing);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(
+        fixture.listRequests.where(
+          (r) => ['DRAFTS', 'OUTBOX'].contains(r.queryParameters['folder']),
+        ),
+        isEmpty,
+      );
+      await _disposeMailbox(tester);
+    },
+  );
+
+  testWidgets('manual sync waits for the server job before reporting success', (
+    tester,
+  ) async {
+    final fixture = _Fixture();
+    await _signIn(tester, fixture);
+    await _chooseBeta(tester);
+    await tester.tap(find.byKey(const Key('sync-mailbox')));
+    await tester.pump();
+    expect(find.text('邮件已同步'), findsNothing);
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+    expect(
+      fixture.requests.any((r) => r.url.path.endsWith('/sync-jobs/sync-1')),
+      isTrue,
+    );
+    expect(find.text('邮件已同步'), findsOneWidget);
+    await _disposeMailbox(tester);
+  });
+
   testWidgets('desktop list and reader each use the available mailbox width', (
     tester,
   ) async {
@@ -463,7 +639,7 @@ void main() {
     await _disposeMailbox(tester);
   });
 
-  testWidgets('no-account connect CTA and compose both open account settings', (
+  testWidgets('no-account compose opens connection flow directly', (
     tester,
   ) async {
     final fixture = _Fixture(accounts: []);
@@ -476,10 +652,12 @@ void main() {
     await tester.tap(find.byTooltip('返回邮箱'));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('写邮件'));
+    await tester.tap(find.text('连接第一个邮箱'));
     await tester.pumpAndSettle();
-    expect(find.byType(AccountSettingsPage), findsOneWidget);
+    expect(find.byType(AddAccountPage), findsOneWidget);
     expect(find.byType(ComposeDialog), findsNothing);
+    await tester.tap(find.byTooltip('返回设置首页'));
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('返回邮箱'));
     await tester.pumpAndSettle();
     expect(
