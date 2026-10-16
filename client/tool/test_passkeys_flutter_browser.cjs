@@ -346,8 +346,9 @@ async function run(input) {
     check(true, 'Password login uses real Flutter controllers and the isolated demo backend');
 
     phase = 'ui-password-confirmed-registration';
+    await button('账户与设置').last().click();
     const initialList = responseFor('/auth/passkeys', 'GET');
-    await button('通行密钥').click();
+    await page.getByRole('button', {name: /^通行密钥(?:\s|$)/}).click();
     const initial = await initialList;
     assert.equal(initial.status(), 200);
     assert.deepEqual((await initial.json()).items, [], 'Fresh fixture must start without credentials');
@@ -375,6 +376,7 @@ async function run(input) {
     check(true, 'Pinned Flutter plugin preserves RP, required UV/resident key, none attestation and standard response');
     await page.screenshot({path: path.join(REPORT_DIR, 'registered.png')});
     await button('关闭通行密钥设置').click();
+    await button('返回邮箱').click();
     await mailbox();
     await signout();
 

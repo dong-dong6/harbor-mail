@@ -33,7 +33,7 @@ const server=createServer((req,res)=>{
  const browser=await chromium.launch({executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',headless:true,args:['--no-sandbox']});
  try{
   for(const width of [1440,390]){
-   const page=await browser.newPage({viewport:{width,height:1100}});const errors=[],consoleLog=[],network=[];page.on('pageerror',e=>errors.push(String(e)));page.on('console',m=>consoleLog.push({type:m.type(),text:m.text()}));page.on('response',r=>network.push({url:r.url(),status:r.status()}));page.on('requestfailed',r=>network.push({url:r.url(),failure:r.failure()}));
+   const page=await browser.newPage({viewport:{width,height:1100},timezoneId:'UTC'});const errors=[],consoleLog=[],network=[];page.on('pageerror',e=>errors.push(String(e)));page.on('console',m=>consoleLog.push({type:m.type(),text:m.text()}));page.on('response',r=>network.push({url:r.url(),status:r.status()}));page.on('requestfailed',r=>network.push({url:r.url(),failure:r.failure()}));
    await page.route('**/*',r=>r.request().url().startsWith(base)||r.request().url().startsWith('data:')?r.continue():r.abort());
    const semantic=(text,prefix=false,line=false)=>page.locator('semanticValue='+JSON.stringify({text,prefix,line}));
    await page.addInitScript(()=>{window.__routeTestHistory=[];addEventListener('popstate',event=>window.__routeTestHistory.push({at:performance.now(),hash:location.hash,state:event.state,bridge:window.HarborNavigation?.status?.()}),true);});
@@ -59,7 +59,7 @@ const server=createServer((req,res)=>{
    const reveal=async locator=>{
     for(let n=0;n<12;n++){
      const box=await locator.boundingBox({timeout:1000}).catch(()=>null);
-     if(box&&box.y>=0&&box.y+Math.min(box.height,80)<1050)return;
+     if(box&&box.y>=0&&box.y+box.height<=page.viewportSize().height+1)return;
      // Wheel within the reader's padding, not inside its opaque iframe and not
      // outside the scrollable card. This works at both tested viewport widths.
      const frame=await page.locator('iframe[title="邮件正文"]').boundingBox({timeout:1000}).catch(()=>null);
@@ -73,6 +73,9 @@ const server=createServer((req,res)=>{
    await page.goto(base+'/#/mail/m2');await login();await hash('/mail/m2');
    await semantic('ROUTE SUBJECT TWO').waitFor();
    await semantic('发件人：Synthetic sender <sender@example.invalid>').waitFor();
+   if(width<600){
+    await page.getByRole('button',{name:/^收件详情(?:\s|$)/}).click();
+   }
    await semantic('收件人：Synthetic recipient <recipient@example.invalid>').waitFor();
    await semantic('抄送：Synthetic copy <copy@example.invalid>').waitFor();
    await semantic('接收时间：2026-10-11 10:42:00',true).waitFor();
