@@ -64,7 +64,13 @@ const server=createServer((req,res)=>{
      // outside the scrollable card. This works at both tested viewport widths.
      const frame=await page.locator('iframe[title="邮件正文"]').boundingBox({timeout:1000}).catch(()=>null);
      await page.mouse.move(frame?Math.max(1,frame.x-8):width-40,850);
-     await page.mouse.wheel(0,box&&box.y<0?-450:450);await page.waitForTimeout(120);
+     // Fixed large jumps can oscillate around a control after font/layout
+     // changes. Scroll only the remaining gap and let Flutter update both
+     // its painted frame and accessibility bounds before checking again.
+     const gap=box?(box.y<0?box.y-48:box.y+box.height-page.viewportSize().height+48):300;
+     await page.mouse.wheel(0,Math.max(-300,Math.min(300,gap)));
+     await page.waitForTimeout(180);
+     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
     }
     throw new Error('Reader control did not become visible after scrolling: '+locator);
    };
