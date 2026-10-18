@@ -49,7 +49,7 @@ void main() {
 
 const ink = Color(0xff24344c),
     blue = Color(0xff0b57d0),
-    muted = Color(0xff7c899c),
+    muted = Color(0xff596a81),
     canvas = Color(0xfff5f7fb);
 typedef Json = Map<String, dynamic>;
 
@@ -2410,6 +2410,30 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                 key: scaffoldKey,
                 onDrawerChanged: (open) => setState(() => drawerOpen = open),
                 drawer: wide ? null : Drawer(child: sidebar()),
+                floatingActionButton:
+                    !wide &&
+                        !drawerOpen &&
+                        !settingsOpen &&
+                        selected == null &&
+                        !collectionView
+                    ? Padding(
+                        padding: const EdgeInsets.only(bottom: 32),
+                        child: FloatingActionButton.extended(
+                          key: const Key('mobile-compose'),
+                          elevation: 0,
+                          focusElevation: 0,
+                          hoverElevation: 0,
+                          highlightElevation: 0,
+                          onPressed: () => compose(),
+                          backgroundColor: blue,
+                          foregroundColor: Colors.white,
+                          icon: Icon(
+                            accounts.isEmpty ? Icons.add : Icons.edit_outlined,
+                          ),
+                          label: Text(accounts.isEmpty ? '连接邮箱' : '写邮件'),
+                        ),
+                      )
+                    : null,
                 body: SafeArea(
                   child: Column(
                     children: [
@@ -2421,9 +2445,11 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                             horizontal: 24,
                             vertical: 8,
                           ),
-                          child: const Text(
-                            '演示环境 · 所有邮件均为合成数据，发送仅保存在本地，不会投递到真实邮箱',
-                            style: TextStyle(
+                          child: Text(
+                            wide
+                                ? '演示环境 · 所有邮件均为合成数据，发送仅保存在本地，不会投递到真实邮箱'
+                                : '演示环境 · 合成邮件，发送不会投递到真实邮箱',
+                            style: const TextStyle(
                               fontSize: 12,
                               color: Color(0xff806029),
                             ),
@@ -2799,7 +2825,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
           label,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
         ),
         subtitle: subtitle == null
             ? null
@@ -2807,12 +2833,12 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                 subtitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 10, color: muted),
+                style: const TextStyle(fontSize: 12, color: muted),
               ),
         trailing: a == null
             ? Text(
                 '${accounts.length}',
-                style: const TextStyle(fontSize: 11, color: muted),
+                style: const TextStyle(fontSize: 12, color: muted),
               )
             : null,
         onTap: () => chooseAccount(id),
@@ -2883,7 +2909,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                       padding: EdgeInsets.only(left: 12),
                       child: Text(
                         '邮箱',
-                        style: TextStyle(fontSize: 11, color: muted),
+                        style: TextStyle(fontSize: 12, color: muted),
                       ),
                     ),
                     const Spacer(),
@@ -2926,7 +2952,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                     padding: EdgeInsets.fromLTRB(12, 16, 0, 6),
                     child: Text(
                       '账户文件夹',
-                      style: TextStyle(fontSize: 11, color: muted),
+                      style: TextStyle(fontSize: 12, color: muted),
                     ),
                   ),
                   ...customFolders.map(
@@ -2942,7 +2968,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                       ),
                       trailing: Text(
                         '${f['unreadCount'] ?? 0}',
-                        style: const TextStyle(fontSize: 10, color: muted),
+                        style: const TextStyle(fontSize: 12, color: muted),
                       ),
                       onTap: () => chooseFolder(f['role'] ?? f['id']),
                     ),
@@ -2957,7 +2983,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
             selected: settingsOpen,
             selectedTileColor: const Color(0xffdce7fa),
             leading: const Icon(Icons.settings_outlined, size: 18),
-            title: const Text('账户与设置', style: TextStyle(fontSize: 12)),
+            title: const Text('账户与设置', style: TextStyle(fontSize: 14)),
             onTap: settings,
           ),
           sidebarAction('退出登录', Icons.logout, signout),
@@ -2973,7 +2999,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
         horizontalTitleGap: 12,
         contentPadding: const EdgeInsets.symmetric(horizontal: 14),
         leading: Icon(icon, size: 18, color: muted),
-        title: Text(label, style: const TextStyle(fontSize: 12)),
+        title: Text(label, style: const TextStyle(fontSize: 14)),
         onTap: action,
       );
 
@@ -3024,7 +3050,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
       title: Text(
         label,
         style: TextStyle(
-          fontSize: 12,
+          fontSize: 14,
           fontWeight: folder == id ? FontWeight.w600 : FontWeight.w400,
         ),
       ),
@@ -3033,7 +3059,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
   );
 
   Widget topbar(bool menu) => Container(
-    height: 72,
+    height: menu ? 60 : 72,
     padding: EdgeInsets.symmetric(horizontal: menu ? 8 : 18),
     color: canvas,
     child: Row(
@@ -3194,136 +3220,181 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
         : '${accountLabel(chosen.first)} · $label';
   }
 
-  Widget messageList() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-        child: Text(
-          mailboxTitle,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
-        ),
-      ),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-        child: Row(
-          children: [
-            TextButton.icon(
-              key: const Key('sync-mailbox'),
-              onPressed: actionBusy || accounts.isEmpty ? null : sync,
-              icon: const Icon(Icons.sync, size: 21),
-              label: Text(actionBusy ? '正在同步…' : '同步邮件'),
+  Widget messageList() => LayoutBuilder(
+    builder: (context, constraints) {
+      final compact = MediaQuery.sizeOf(context).width < 720;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (compact)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 4, 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      mailboxTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    key: const Key('sync-mailbox'),
+                    tooltip: actionBusy ? '正在同步…' : '同步邮件',
+                    onPressed: actionBusy || accounts.isEmpty ? null : sync,
+                    icon: const Icon(Icons.sync, color: blue),
+                  ),
+                ],
+              ),
+            )
+          else ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+              child: Text(
+                mailboxTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
             ),
-            const Spacer(),
-            Text(
-              '${messages.length} 封已加载',
-              style: const TextStyle(fontSize: 11, color: muted),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+              child: Row(
+                children: [
+                  TextButton.icon(
+                    key: const Key('sync-mailbox'),
+                    onPressed: actionBusy || accounts.isEmpty ? null : sync,
+                    icon: const Icon(Icons.sync, size: 21),
+                    label: Text(actionBusy ? '正在同步…' : '同步邮件'),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '${messages.length} 封已加载',
+                    style: const TextStyle(fontSize: 12, color: muted),
+                  ),
+                ],
+              ),
             ),
           ],
-        ),
-      ),
-      const Divider(height: 1, color: Color(0xffe8edf4)),
-      SizedBox(
-        height: 46,
-        child: Row(
-          children: [
-            for (final entry in [
-              ('all', '全部邮件', Icons.inbox_outlined),
-              ('unread', '未读', Icons.mark_email_unread_outlined),
-            ])
-              Expanded(
-                child: InkWell(
-                  onTap: () => setFilter(entry.$1),
-                  child: Container(
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      border: Border(
-                        bottom: BorderSide(
-                          width: 3,
-                          color: filter == entry.$1 ? blue : Colors.transparent,
+          const Divider(height: 1, color: Color(0xffe8edf4)),
+          SizedBox(
+            height: compact ? 44 : 46,
+            child: Row(
+              children: [
+                for (final entry in [
+                  ('all', '全部邮件', Icons.inbox_outlined),
+                  ('unread', '未读', Icons.mark_email_unread_outlined),
+                ])
+                  Expanded(
+                    child: InkWell(
+                      onTap: () => setFilter(entry.$1),
+                      child: Container(
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          border: Border(
+                            bottom: BorderSide(
+                              width: 3,
+                              color: filter == entry.$1
+                                  ? blue
+                                  : Colors.transparent,
+                            ),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              entry.$3,
+                              size: 18,
+                              color: filter == entry.$1 ? blue : muted,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              entry.$2,
+                              style: TextStyle(
+                                fontSize: compact ? 14 : 13,
+                                color: filter == entry.$1 ? blue : muted,
+                                fontWeight: filter == entry.$1
+                                    ? FontWeight.w600
+                                    : FontWeight.normal,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                  ),
+              ],
+            ),
+          ),
+          if (loading) const LinearProgressIndicator(minHeight: 2),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: sync,
+              child: messages.isEmpty && !loading
+                  ? ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
                       children: [
-                        Icon(
-                          entry.$3,
-                          size: 18,
-                          color: filter == entry.$1 ? blue : muted,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          entry.$2,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: filter == entry.$1 ? blue : muted,
-                            fontWeight: filter == entry.$1
-                                ? FontWeight.w600
-                                : FontWeight.normal,
+                        SizedBox(
+                          height: 300,
+                          child: empty(
+                            search.text.isNotEmpty
+                                ? '没有搜索结果'
+                                : unread
+                                ? '没有未读邮件'
+                                : '这里暂无邮件',
+                            search.text.isNotEmpty
+                                ? '仅搜索当前邮箱视图中已同步的邮件，可清除搜索后重试'
+                                : unread
+                                ? '切换“全部邮件”查看当前文件夹'
+                                : '下拉或点击“同步邮件”获取最新内容',
+                            Icons.inbox_outlined,
                           ),
                         ),
                       ],
+                    )
+                  : ListView.builder(
+                      key: const ValueKey('message-list'),
+                      controller: listScroll,
+                      padding: EdgeInsets.only(bottom: compact ? 88 : 0),
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      itemCount: messages.length + (more ? 1 : 0),
+                      itemBuilder: (ctx, i) {
+                        if (i == messages.length) {
+                          return TextButton(
+                            onPressed: loading
+                                ? null
+                                : () => refresh(append: true),
+                            child: const Text('加载更多'),
+                          );
+                        }
+                        return messageRow(messages[i]);
+                      },
                     ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-      if (loading) const LinearProgressIndicator(minHeight: 2),
-      Expanded(
-        child: RefreshIndicator(
-          onRefresh: sync,
-          child: messages.isEmpty && !loading
-              ? ListView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  children: [
-                    SizedBox(
-                      height: 300,
-                      child: empty(
-                        search.text.isNotEmpty
-                            ? '没有搜索结果'
-                            : unread
-                            ? '没有未读邮件'
-                            : '这里暂无邮件',
-                        search.text.isNotEmpty
-                            ? '仅搜索当前邮箱视图中已同步的邮件，可清除搜索后重试'
-                            : unread
-                            ? '切换“全部邮件”查看当前文件夹'
-                            : '下拉或点击“同步邮件”获取最新内容',
-                        Icons.inbox_outlined,
-                      ),
-                    ),
-                  ],
-                )
-              : ListView.builder(
-                  key: const ValueKey('message-list'),
-                  controller: listScroll,
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  itemCount: messages.length + (more ? 1 : 0),
-                  itemBuilder: (ctx, i) {
-                    if (i == messages.length) {
-                      return TextButton(
-                        onPressed: loading ? null : () => refresh(append: true),
-                        child: const Text('加载更多'),
-                      );
-                    }
-                    return messageRow(messages[i]);
-                  },
-                ),
-        ),
-      ),
-      const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-        child: Text(
-          '每 30 秒刷新 · 仅搜索已同步邮件',
-          style: TextStyle(fontSize: 10, color: muted),
-        ),
-      ),
-    ],
+            ),
+          ),
+          Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: 18,
+              vertical: compact ? 6 : 12,
+            ),
+            child: Text(
+              compact
+                  ? '${messages.length} 封已加载 · 每 30 秒刷新'
+                  : '每 30 秒刷新 · 仅搜索已同步邮件',
+              style: const TextStyle(fontSize: 12, color: muted),
+            ),
+          ),
+        ],
+      );
+    },
   );
 
   Widget draftList() => Column(
@@ -3400,7 +3471,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
         ? m['fromName']
         : m['fromAddress'] ?? '';
     final style = TextStyle(
-      fontSize: 13,
+      fontSize: MediaQuery.sizeOf(context).width < 720 ? 15 : 14,
       fontWeight: read ? FontWeight.w400 : FontWeight.w600,
       color: ink,
     );
@@ -3438,7 +3509,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                           const SizedBox(width: 8),
                           Text(
                             date(m['receivedAt']),
-                            style: const TextStyle(fontSize: 10, color: muted),
+                            style: const TextStyle(fontSize: 12, color: muted),
                           ),
                         ],
                       ),
@@ -3454,7 +3525,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                         m['snippet'] ?? '',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 12, color: muted),
+                        style: const TextStyle(fontSize: 13, color: muted),
                       ),
                       if (badge.isNotEmpty)
                         Padding(
@@ -3463,7 +3534,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                             badge,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 10, color: muted),
+                            style: const TextStyle(fontSize: 12, color: muted),
                           ),
                         ),
                     ],
@@ -3534,7 +3605,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                             badge,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 10, color: muted),
+                            style: const TextStyle(fontSize: 12, color: muted),
                           ),
                         ),
                       const SizedBox(width: 16),
@@ -3543,7 +3614,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                         child: Text(
                           date(m['receivedAt']),
                           textAlign: TextAlign.right,
-                          style: const TextStyle(fontSize: 10, color: muted),
+                          style: const TextStyle(fontSize: 12, color: muted),
                         ),
                       ),
                     ],
@@ -3574,7 +3645,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
           children: [
             Text('收件箱', style: TextStyle(color: muted, fontSize: 13)),
             Spacer(),
-            Text('尚未连接邮箱', style: TextStyle(color: muted, fontSize: 11)),
+            Text('尚未连接邮箱', style: TextStyle(color: muted, fontSize: 12)),
           ],
         ),
       ),
@@ -3622,13 +3693,13 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                 const Text(
                   '支持的邮箱可使用 OAuth 授权，也可手动配置连接',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 11, color: muted),
+                  style: TextStyle(fontSize: 12, color: muted),
                 ),
                 const SizedBox(height: 32),
                 const Text(
                   '选择邮箱服务商  ·  完成授权  ·  开始同步',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 11, color: muted),
+                  style: TextStyle(fontSize: 12, color: muted),
                 ),
                 const SizedBox(height: 16),
                 TextButton(
@@ -3741,7 +3812,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                 if (!compact)
                   const Text(
                     '安全邮件阅读',
-                    style: TextStyle(fontSize: 10, color: muted),
+                    style: TextStyle(fontSize: 12, color: muted),
                   ),
               ],
             ),
@@ -3860,7 +3931,7 @@ class MailboxState extends State<Mailbox> with WidgetsBindingObserver {
                           const SizedBox(height: 20),
                           const Text(
                             '隔离邮件阅读 · 远程图片默认阻止',
-                            style: TextStyle(fontSize: 10, color: muted),
+                            style: TextStyle(fontSize: 12, color: muted),
                           ),
                         ],
                       ),

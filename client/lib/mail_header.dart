@@ -56,7 +56,7 @@ class MailHeader extends StatelessWidget {
               tilePadding: EdgeInsets.zero,
               childrenPadding: EdgeInsets.zero,
               title: const Text('收件详情', style: TextStyle(fontSize: 12)),
-              subtitle: Text(received, style: const TextStyle(fontSize: 11)),
+              subtitle: Text(received, style: const TextStyle(fontSize: 12)),
               expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 field('收件人', addresses(message['to'])),

@@ -256,7 +256,7 @@ class _MailBodyState extends State<MailBody> {
             padding: EdgeInsets.only(bottom: 12),
             child: Text(
               '邮件排版不含可安全显示的内容，已显示纯文本。',
-              style: TextStyle(fontSize: 11, color: Color(0xff687080)),
+              style: TextStyle(fontSize: 12, color: Color(0xff687080)),
             ),
           ),
         if (hasHtml && hasReadableHtml && !_plain) ...[
@@ -264,7 +264,7 @@ class _MailBodyState extends State<MailBody> {
             padding: EdgeInsets.only(bottom: 12),
             child: Text(
               '邮件脚本已禁用。远程图片默认阻止，开启后由服务器安全代理载入；发件人仍可能获知图片被请求。内嵌附件图片暂显示占位。',
-              style: TextStyle(fontSize: 11, color: Color(0xff687080)),
+              style: TextStyle(fontSize: 12, color: Color(0xff687080)),
             ),
           ),
           if (_body.truncated)

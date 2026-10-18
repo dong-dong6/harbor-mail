@@ -8,7 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'api.dart';
 
 typedef Json = Map<String, dynamic>;
-const muted = Color(0xff7c899c);
+const muted = Color(0xff596a81);
 
 class ExternalPickerResult<T> {
   const ExternalPickerResult(this.value, {this.reauthorize = false});
@@ -546,7 +546,7 @@ class ComposeEditorState extends State<ComposeEditor> {
         const SizedBox(height: 8),
         const Text(
           '草稿需手动保存 · 仅支持纯文本正文',
-          style: TextStyle(fontSize: 10, color: muted),
+          style: TextStyle(fontSize: 12, color: muted),
         ),
       ],
     ),

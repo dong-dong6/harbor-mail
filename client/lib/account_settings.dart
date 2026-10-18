@@ -8,7 +8,7 @@ import 'oauth_browser.dart';
 import 'mail_notifications.dart';
 
 typedef Json = Map<String, dynamic>;
-const muted = Color(0xff7c899c), blue = Color(0xff0b57d0);
+const muted = Color(0xff596a81), blue = Color(0xff0b57d0);
 
 /// Full content-area account management. Credentials are intentionally absent.
 class AccountSettingsPage extends StatefulWidget {
@@ -750,7 +750,7 @@ class AddAccountPageState extends State<AddAccountPage> {
                       p['configured'] == true
                           ? '本地配置完整 · 仍需服务商授权'
                           : '服务器尚未配置 OAuth',
-                      style: const TextStyle(fontSize: 11),
+                      style: const TextStyle(fontSize: 12),
                     ),
                     trailing: OutlinedButton(
                       onPressed:
@@ -802,7 +802,7 @@ class AddAccountPageState extends State<AddAccountPage> {
             const SizedBox(height: 10),
             const Text(
               '授权码将发送至你的服务器并加密保存。需在邮箱设置中先开启 IMAP / SMTP；请勿填写网页登录密码。',
-              style: TextStyle(fontSize: 11, color: muted, height: 1.6),
+              style: TextStyle(fontSize: 12, color: muted, height: 1.6),
             ),
             const SizedBox(height: 12),
             const Divider(height: 30),
