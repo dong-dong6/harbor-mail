@@ -316,7 +316,7 @@ class _AndroidDownloadCardState extends State<AndroidDownloadCard> {
                   ),
                 ),
                 const Text(
-                  '仅适用于 Android。不同 CI 构建的签名可能变化，导致无法覆盖更新。请保留现有 App 和本地数据，联系管理员确认兼容版本。',
+                    '仅适用于 Android。同包名、同签名且版本码更高的安装包可保留数据更新；旧临时签名版本需先由管理员确认兼容性，请保留现有 App 和本地数据。',
                 ),
                 const SizedBox(height: 12),
                 FilledButton.icon(

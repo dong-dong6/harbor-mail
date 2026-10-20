@@ -4,6 +4,22 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val distributionStore = providers.environmentVariable("HARBOR_ANDROID_KEYSTORE").orNull
+val distributionAlias = providers.environmentVariable("HARBOR_ANDROID_KEY_ALIAS").orNull
+val distributionStorePassword = providers.environmentVariable("HARBOR_ANDROID_STORE_PASSWORD").orNull
+val distributionKeyPassword = providers.environmentVariable("HARBOR_ANDROID_KEY_PASSWORD").orNull
+val requireStableSigning = providers.environmentVariable("HARBOR_ANDROID_REQUIRE_STABLE_SIGNING")
+    .orNull == "true"
+val hasDistributionSigning = listOf(distributionStore, distributionAlias,
+    distributionStorePassword, distributionKeyPassword).any { !it.isNullOrBlank() }
+if (requireStableSigning || hasDistributionSigning) {
+    require(listOf(distributionStore, distributionAlias, distributionStorePassword,
+        distributionKeyPassword).all { !it.isNullOrBlank() }) {
+        "Persistent Android signing requires a keystore, alias and both passwords."
+    }
+    require(file(distributionStore!!).isFile) { "Android signing keystore is unavailable." }
+}
+
 android {
     namespace = "dev.harbor.harbor_mail"
     compileSdk = flutter.compileSdkVersion
@@ -34,15 +50,30 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasDistributionSigning) {
+            create("distribution") {
+                storeFile = file(distributionStore!!)
+                storePassword = distributionStorePassword
+                keyAlias = distributionAlias
+                keyPassword = distributionKeyPassword
+                storeType = providers.environmentVariable("HARBOR_ANDROID_STORE_TYPE")
+                    .orElse("PKCS12").get()
+            }
+        }
+    }
+
     buildTypes {
         debug {
             // Development APKs coexist with a separately signed release app.
             applicationIdSuffix = ".dev"
+            if (hasDistributionSigning) {
+                signingConfig = signingConfigs.getByName("distribution")
+            }
         }
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // An absent distribution key produces an unsigned release, never a debug-signed one.
+            signingConfig = if (hasDistributionSigning) signingConfigs.getByName("distribution") else null
         }
     }
 }

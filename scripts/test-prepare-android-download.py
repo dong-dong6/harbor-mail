@@ -15,6 +15,22 @@ CERTS = 'Signer #1 certificate DN: CN=Android Debug, O=Android, C=US\nSigner #1 
 
 
 class PrepareAndroidTests(unittest.TestCase):
+    def test_persistent_signer_pin_is_required_to_match_actual_apk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'input.apk'
+            source.write_bytes(b'PK\x03\x04synthetic-contract-fixture-only')
+            destination = root / 'out'
+            with patch.object(module, 'checked_tool', side_effect=[BADGING, CERTS]):
+                result = module.prepare(source, destination, Path('aapt'), Path('apksigner'),
+                                        '0.2.3', 5, 'b' * 40, expected_certificate_sha256='A' * 64)
+            self.assertEqual('a' * 64, result['signing']['certificateSha256'])
+            original = (destination / 'manifest.json').read_bytes()
+            with patch.object(module, 'checked_tool', side_effect=[BADGING, CERTS]), self.assertRaises(ValueError):
+                module.prepare(source, destination, Path('aapt'), Path('apksigner'),
+                               '0.2.3', 5, 'b' * 40, expected_certificate_sha256='c' * 64)
+            self.assertEqual(original, (destination / 'manifest.json').read_bytes())
+
     def test_actual_staged_bytes_generate_digest_and_no_paths(self):
         import hashlib
         with tempfile.TemporaryDirectory() as directory:
@@ -44,7 +60,7 @@ class PrepareAndroidTests(unittest.TestCase):
             source.write_bytes(b'PK\x03\x04synthetic-contract-fixture-only')
             for content in ['', '更新说明\n- 保留设置。\n<script>plain text</script>\n', '📨' * 4000]:
                 with self.subTest(length=len(content)):
-                    notes.write_text(content, encoding='utf-8')
+                    notes.write_text(content, encoding='utf-8', newline='')
                     with patch.object(module, 'checked_tool', side_effect=[BADGING, CERTS]):
                         manifest = module.prepare(source, root / 'out', Path('aapt'), Path('apksigner'),
                                                   '0.2.3', 5, 'b' * 40, release_notes_file=notes)

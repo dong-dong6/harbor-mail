@@ -110,7 +110,7 @@ String? androidUpdateBlocker(
     return '当前安装包不属于此更新通道，无法安全更新。';
   }
   if (manifest.certificateSha256 != installed['certificateSha256']) {
-    return '新版本签名与本机不一致，无法保留配置覆盖更新。当前测试包使用临时 CI 签名，请联系管理员处理签名连续性；不要卸载现有 App。';
+    return '新版本签名与本机不一致，无法保留配置覆盖更新。请联系管理员提供使用原签名密钥构建的兼容版本；不要卸载现有 App。';
   }
   final code = installed['versionCode'] as int;
   if (manifest.versionCode < code) {

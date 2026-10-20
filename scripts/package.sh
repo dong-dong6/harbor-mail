@@ -71,6 +71,7 @@ with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
         if rel.as_posix()=='server/src/main/resources/META-INF/public-web-assets.json': continue
         if rel.as_posix().startswith('server/src/main/resources/META-INF/android-download/'): continue
         if rel.name=='.env' or rel.name.startswith('.env.') and rel.name!='.env.example': continue
+        if rel.suffix.lower() in {'.jks','.keystore','.p12','.pfx'} or rel.name=='key.properties': continue
         if rel.name.startswith('.attach_pid'): continue
         if rel.name.endswith('.log') or rel.name=='local.properties' or rel.name.startswith('.flutter-plugins'): continue
         if rel.name.endswith(('.iml','.xcuserstate')) or rel.name in {'Generated.xcconfig','flutter_export_environment.sh','.DS_Store'}: continue

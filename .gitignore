@@ -1,4 +1,9 @@
 tools/
+*.jks
+*.keystore
+*.p12
+*.pfx
+key.properties
 dist/
 data/
 .env

@@ -23,20 +23,15 @@ size, SHA-256, source commit and attachment headers.
 
 Current artifacts are **development/debug builds**, with application ID
 `dev.harbor.harbor_mail.dev`. The `.dev` suffix keeps this test build separate from the future
-production package `dev.harbor.harbor_mail`. The default Android debug keystore is ephemeral
-on the isolated CI runner. No production signing key is created, uploaded, cached or persisted.
-The existing release Gradle configuration also uses debug signing and is **not** a production
-release signing configuration. This workflow deliberately invokes `flutter build apk --debug`.
+production package `dev.harbor.harbor_mail`. Trusted CI builds now require a persistent
+encrypted PKCS12 key from Actions Secrets and a pinned certificate SHA-256. Missing or mismatched
+signing configuration fails before publication; there is no temporary-key fallback. PR builds
+retain ephemeral debug signing; their artifacts are validation only and not an upgrade channel.
 
-An in-place Android update must keep the same package name and signing certificate and use a
-higher `versionCode`. That update preserves the app's local data and settings; existing
-in-memory sessions still expire and are not made persistent by an update. Each isolated CI
-run can have a different debug certificate, so the current ephemeral debug signing blocks
-cross-build upgrades when certificates differ. Keep the installed app and its data if a build
-is incompatible. Do not uninstall as an update workaround: uninstalling clears local app data.
-Do not use this debug build for production mail or real accounts.
-A future production build needs an approved existing signing-key setup, stable application ID,
-release-signing configuration, update policy, and a separately reviewed manifest classification.
+Setup, key backup, and old-installation migration limits are documented in
+[Persistent Android signing](ANDROID_SIGNING.md). A higher versionCode signed by the same key
+preserves local data. A new fixed key cannot replace an old installation whose temporary private
+key was lost. Keep the existing app and data; signature checks remain enforced.
 
 ## SDK requirements and license policy
 
@@ -138,10 +133,10 @@ and its data intact. Normal same-package, same-certificate, higher-version-code 
 keeps local app data. Server-side accounts and settings are not deleted by checking for or
 canceling an update. Android may still require login again because sessions are in memory.
 
-With today's ephemeral CI debug certificate, a newer downloadable build may be incompatible
-with the installed build. The safe next step is to obtain a build signed with the existing
-certificate. Persistent production signing needs a separately approved setup; this feature
-does not create keys, change signing, increase the version, or bypass Android's checks.
+Future CI updates use the configured fixed certificate. Existing temporary-signature
+installations remain incompatible unless the original private key is recovered. The updater
+continues to require matching installed and downloaded certificates; it never bypasses Android
+signature checks. See [signing setup and migration](ANDROID_SIGNING.md).
 
 ## Local checks
 

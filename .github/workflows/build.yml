@@ -26,6 +26,8 @@ jobs:
       FLUTTER_SUPPRESS_ANALYTICS: 'true'
       DART_SUPPRESS_ANALYTICS: 'true'
       HARBOR_ANDROID_NDK_VERSION: '29.0.14206865'
+      # PRs only validate source and never receive signing credentials.
+      HARBOR_ANDROID_REQUIRE_STABLE_SIGNING: ${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,6 +36,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: Restore and verify persistent Android signing identity
+        if: env.HARBOR_ANDROID_REQUIRE_STABLE_SIGNING == 'true'
+        env:
+          HARBOR_ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          HARBOR_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          HARBOR_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          HARBOR_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          HARBOR_ANDROID_CERTIFICATE_SHA256: ${{ secrets.ANDROID_SIGNING_CERTIFICATE_SHA256 }}
+        run: python3 scripts/restore-android-signing.py --destination "$RUNNER_TEMP/harbor-android-signing.p12"
       - name: Install pinned Flutter SDK from official archive
         shell: bash
         run: |
@@ -52,10 +63,18 @@ jobs:
           bash client/android/tests/run-device-session-vault-tests.sh
           bash client/android/tests/run-policy-tests.sh
           python3 scripts/test-prepare-android-download.py
+          python3 scripts/test-restore-android-signing.py
       - name: Build this checkout using the runner's preinstalled Android SDK
         # Fails closed if a required SDK component/license is absent; never accepts licenses.
-        # Ephemeral default debug signing only. No production keystore or persistent key cache.
+        # Trusted builds must use the restored identity; no fallback to a new debug key.
+        env:
+          HARBOR_ANDROID_STORE_PASSWORD: ${{ env.HARBOR_ANDROID_REQUIRE_STABLE_SIGNING == 'true' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          HARBOR_ANDROID_KEY_PASSWORD: ${{ env.HARBOR_ANDROID_REQUIRE_STABLE_SIGNING == 'true' && secrets.ANDROID_KEY_PASSWORD || '' }}
+          HARBOR_ANDROID_KEY_ALIAS: ${{ env.HARBOR_ANDROID_REQUIRE_STABLE_SIGNING == 'true' && secrets.ANDROID_KEY_ALIAS || '' }}
         run: bash scripts/build-android-download.sh
+      - name: Remove runner signing material
+        if: always()
+        run: python3 -c 'import os,pathlib; (pathlib.Path(os.environ["RUNNER_TEMP"])/"harbor-android-signing.p12").unlink(missing_ok=True)'
       - name: Report remaining disk and compiled APK size
         if: always()
         shell: bash

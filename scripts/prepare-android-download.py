@@ -70,7 +70,9 @@ def read_release_notes(path):
 
 
 def prepare(apk, destination, aapt, apksigner, version_name, version_code, source_commit,
-            release_notes_file=None):
+            release_notes_file=None, expected_certificate_sha256=None):
+    if expected_certificate_sha256 is not None and not re.fullmatch(r'[0-9a-fA-F]{64}', expected_certificate_sha256):
+        raise ValueError('Expected a pinned SHA-256 signing certificate')
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version_name) or not 1 <= version_code <= 2100000000:
         raise ValueError('Expected a stable project version and positive Android version code')
     if not re.fullmatch(r'[0-9a-f]{40}', source_commit):
@@ -100,6 +102,8 @@ def prepare(apk, destination, aapt, apksigner, version_name, version_code, sourc
         # Successful verify exit status is mandatory; text alone is not proof.
         certificates = checked_tool([str(apksigner), 'verify', '--verbose', '--print-certs', str(staged)])
         metadata = inspect_metadata(badging, certificates, version_name, version_code)
+        if expected_certificate_sha256 is not None and metadata['signing']['certificateSha256'] != expected_certificate_sha256.lower():
+            raise ValueError('APK signing certificate differs from the pinned persistent identity')
         manifest = {'schemaVersion': 1, 'available': True, 'downloadPath': DOWNLOAD_PATH,
                     'fileName': 'harbor-mail-dev.apk', 'sizeBytes': size, 'sha256': digest.hexdigest(),
                     'sourceCommit': source_commit, **metadata}
@@ -122,12 +126,14 @@ if __name__ == '__main__':
     parser.add_argument('--version-name', required=True)
     parser.add_argument('--version-code', type=int, required=True)
     parser.add_argument('--source-commit', required=True)
+    parser.add_argument('--expected-certificate-sha256', help='Required certificate identity for distributable CI builds')
     parser.add_argument('--release-notes-file', type=Path,
                         help='Optional UTF-8 plain-text release notes, at most 4000 Unicode characters')
     args = parser.parse_args()
     try:
         metadata = prepare(args.apk, args.destination, args.aapt, args.apksigner,
-                           args.version_name, args.version_code, args.source_commit, args.release_notes_file)
+                           args.version_name, args.version_code, args.source_commit, args.release_notes_file,
+                           args.expected_certificate_sha256)
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         raise SystemExit('Android download preparation failed: ' + str(exc)) from exc
     print(json.dumps(metadata, sort_keys=True))

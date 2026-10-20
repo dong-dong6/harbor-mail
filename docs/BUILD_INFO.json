@@ -32,7 +32,7 @@
   "nativeWindowsBuild": "requires exact-commit CI",
   "realHardwareAuthentication": "not_run",
   "realDeviceEnrollment": "not_performed",
-  "androidSigning": "Ephemeral development debug signature; no new permanent key; cross-CI in-place update may be incompatible",
+  "androidSigning": "Persistent development signing configured via Actions Secrets with pinned certificate; exact signed-build verification requires CI; old ephemeral-key installations are incompatible",
   "deviceSessions": {
     "accessSecondsDefault": 900,
     "idleDaysDefault": 30,
